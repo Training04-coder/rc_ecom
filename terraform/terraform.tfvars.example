@@ -1,0 +1,4 @@
+aws_region  = "eu-west-3"
+domain_name = "mondomaine.click"   # zone Route 53 publique existante dans le MEME compte
+subdomain   = "app"
+demo_vuln   = false                 # true pour une XSS volontaire sur /search

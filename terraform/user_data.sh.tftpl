@@ -1,0 +1,57 @@
+#!/bin/bash
+set -euxo pipefail
+
+# 1) Java 21 (JDK complet : le source launcher `java App.java` a besoin du compilateur)
+dnf install -y java-21-amazon-corretto-devel
+
+# 2) Application (single-file Java, lancee sans build)
+mkdir -p /opt/app
+cat > /opt/app/App.java <<'JAVA'
+${app_java}
+JAVA
+
+cat > /etc/systemd/system/javaapp.service <<UNIT
+[Unit]
+Description=Mini site Java
+After=network-online.target
+
+[Service]
+Environment=PORT=8080
+Environment=BIND=127.0.0.1
+Environment=DEMO_VULN=${demo_vuln}
+ExecStart=/usr/bin/java /opt/app/App.java
+Restart=always
+DynamicUser=yes
+LogsDirectory=bricoshop
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+# 3) Caddy : reverse proxy + certificat HTTPS Let's Encrypt automatique
+curl -fsSL "https://caddyserver.com/api/download?os=linux&arch=amd64" -o /usr/local/bin/caddy
+chmod +x /usr/local/bin/caddy
+mkdir -p /etc/caddy /var/lib/caddy
+
+cat > /etc/caddy/Caddyfile <<CADDY
+${fqdn} {
+  reverse_proxy 127.0.0.1:8080
+}
+CADDY
+
+cat > /etc/systemd/system/caddy.service <<UNIT
+[Unit]
+Description=Caddy
+After=network-online.target
+
+[Service]
+Environment=HOME=/var/lib/caddy
+ExecStart=/usr/local/bin/caddy run --config /etc/caddy/Caddyfile
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now javaapp caddy
