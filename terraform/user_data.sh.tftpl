@@ -37,6 +37,10 @@ curl -fsSL "https://caddyserver.com/api/download?os=linux&arch=amd64" -o /usr/lo
 chmod +x /usr/local/bin/caddy
 mkdir -p /etc/caddy /var/lib/caddy
 
+# Restaure les certificats Caddy depuis S3 : evite de redemander un certificat
+# Let's Encrypt a chaque recreation d'instance (limite de 5/semaine par nom).
+aws s3 sync "s3://${bucket}/caddy/" /var/lib/caddy/ --region ${region} || true
+
 cat > /etc/caddy/Caddyfile <<CADDY
 ${fqdn} {
   reverse_proxy 127.0.0.1:8080
@@ -55,6 +59,25 @@ Restart=always
 
 [Install]
 WantedBy=multi-user.target
+UNIT
+
+# Sauvegarde periodique des certificats Caddy vers S3 (pour les futurs rebuilds)
+cat > /etc/systemd/system/caddy-backup.service <<UNIT
+[Unit]
+Description=Sauvegarde des certificats Caddy vers S3
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/aws s3 sync /var/lib/caddy/ s3://${bucket}/caddy/ --region ${region}
+UNIT
+
+cat > /etc/systemd/system/caddy-backup.timer <<UNIT
+[Unit]
+Description=Sauvegarde periodique des certificats Caddy
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+[Install]
+WantedBy=timers.target
 UNIT
 
 # 4) CloudWatch Agent : envoie /var/log/bricoshop/app.log vers le log group ${log_group}
@@ -80,7 +103,7 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'CWCON
 CWCONF
 
 systemctl daemon-reload
-systemctl enable --now javaapp caddy
+systemctl enable --now javaapp caddy caddy-backup.timer
 
 # Demarre l'agent avec la config ci-dessus (apres javaapp, pour que le dossier de log existe)
 /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \

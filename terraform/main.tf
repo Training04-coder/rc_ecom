@@ -76,6 +76,21 @@ resource "aws_iam_role_policy" "s3_read" {
   })
 }
 
+# Sauvegarde/restauration des certificats Caddy sous le prefixe caddy/ du bucket
+# (lecture deja couverte par s3_read ; ici on ajoute l'ecriture)
+resource "aws_iam_role_policy" "caddy_certs" {
+  name = "sauvegarde-certs-caddy"
+  role = aws_iam_role.ec2.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["s3:PutObject", "s3:DeleteObject"]
+      Resource = "${aws_s3_bucket.app.arn}/caddy/*"
+    }]
+  })
+}
+
 # Droits minimaux CloudWatch Logs, restreints au seul log group /bricoshop/app
 resource "aws_iam_role_policy" "cw_logs" {
   name = "ecriture-logs-cloudwatch"
