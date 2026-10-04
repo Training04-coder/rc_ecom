@@ -46,7 +46,7 @@ resource "aws_security_group" "web" {
   }
 }
 
-# --- Role IAM minimal : Session Manager uniquement ---
+# --- Role IAM minimal : Session Manager + lecture du bucket de code ---
 resource "aws_iam_role" "ec2" {
   name_prefix = "secagent-java-ec2-"
   assume_role_policy = jsonencode({
@@ -64,6 +64,49 @@ resource "aws_iam_role_policy_attachment" "ssm" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
+resource "aws_iam_role_policy" "s3_read" {
+  name = "lecture-code-app"
+  role = aws_iam_role.ec2.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      { Effect = "Allow", Action = "s3:ListBucket", Resource = aws_s3_bucket.app.arn },
+      { Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.app.arn}/*" },
+    ]
+  })
+}
+
+# --- S3 prive : code de l'appli (App.java + static/), telecharge par l'EC2 au demarrage ---
+locals {
+  app_files = merge(
+    { "App.java" = "${path.module}/../app/App.java" },
+    { for f in fileset("${path.module}/../app/static", "*") : "static/${f}" => "${path.module}/../app/static/${f}" },
+  )
+  # Empreinte du code : inseree dans le user_data pour recreer l'instance a chaque changement de code
+  app_hash = sha1(join(",", [for k, p in local.app_files : "${k}:${filesha1(p)}"]))
+}
+
+resource "aws_s3_bucket" "app" {
+  bucket_prefix = "secagent-java-app-"
+  force_destroy = true
+}
+
+resource "aws_s3_bucket_public_access_block" "app" {
+  bucket                  = aws_s3_bucket.app.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_object" "app" {
+  for_each = local.app_files
+  bucket   = aws_s3_bucket.app.id
+  key      = each.key
+  source   = each.value
+  etag     = filemd5(each.value)
+}
+
 resource "aws_iam_instance_profile" "ec2" {
   name_prefix = "secagent-java-ec2-"
   role        = aws_iam_role.ec2.name
@@ -78,14 +121,17 @@ resource "aws_instance" "web" {
   user_data_replace_on_change = true
   credit_specification { cpu_credits = "standard" }
 
-  # user_data compresse (gzip, decompresse par cloud-init) pour rester sous la limite AWS de 16 Ko.
-  # replace() retire les CRLF d'un checkout Windows, sinon bash et les heredocs cassent sur Linux.
-  user_data_base64 = base64gzip(replace(templatefile("${path.module}/user_data.sh.tftpl", {
-    fqdn         = local.fqdn
-    app_java     = file("${path.module}/../app/App.java")
-    static_files = { for f in fileset("${path.module}/../app/static", "*") : f => file("${path.module}/../app/static/${f}") }
-    demo_vuln    = var.demo_vuln
-  }), "\r\n", "\n"))
+  # Le code vient de S3 (plus de limite de 16 Ko). replace() retire les CRLF d'un checkout Windows.
+  user_data = replace(templatefile("${path.module}/user_data.sh.tftpl", {
+    fqdn      = local.fqdn
+    bucket    = aws_s3_bucket.app.id
+    region    = var.aws_region
+    app_hash  = local.app_hash
+    demo_vuln = var.demo_vuln
+  }), "\r\n", "\n")
+
+  # Les fichiers et le droit de lecture doivent exister avant le demarrage de l'instance
+  depends_on = [aws_s3_object.app, aws_iam_role_policy.s3_read]
 
   metadata_options {
     http_tokens = "required" # IMDSv2 obligatoire

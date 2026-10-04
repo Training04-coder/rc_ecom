@@ -4,16 +4,14 @@ set -euxo pipefail
 # 1) Java 21 (JDK complet : le source launcher `java App.java` a besoin du compilateur)
 dnf install -y java-21-amazon-corretto-devel
 
-# 2) Application (single-file Java, lancee sans build)
-mkdir -p /opt/app/static
-cat > /opt/app/App.java <<'BRICO_EOF'
-${app_java}
-BRICO_EOF
-%{ for name, content in static_files ~}
-cat > /opt/app/static/${name} <<'BRICO_EOF'
-${content}
-BRICO_EOF
-%{ endfor ~}
+# 2) Application (single-file Java, lancee sans build) telechargee depuis S3 - version ${app_hash}
+# Retentatives : le role IAM peut mettre quelques secondes a etre effectif apres sa creation
+mkdir -p /opt/app
+for attempt in $(seq 30); do
+  aws s3 cp "s3://${bucket}/" /opt/app/ --recursive --region ${region} && break
+  sleep 10
+done
+test -f /opt/app/App.java
 
 cat > /etc/systemd/system/javaapp.service <<UNIT
 [Unit]
