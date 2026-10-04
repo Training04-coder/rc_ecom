@@ -16,11 +16,14 @@
         <img src="/static/logo.svg" alt="" width="36" height="36">
         <span>Brico<b>Shop</b></span>
       </a>
-      <button class="cart" type="button" aria-label="Panier, 0 article">
-        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M3 4h2l2.4 11.2a2 2 0 0 0 2 1.6h7.7a2 2 0 0 0 2-1.5L21 8H6.2M10 21a1 1 0 1 0 0-2 1 1 0 0 0 0 2Zm8 0a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"/></svg>
-        <span class="cart__label">Panier</span>
-        <span class="cart__count" id="cart-count">0</span>
-      </button>
+      <div class="header__actions">
+        <div class="account" id="account"><a class="link" href="/login">Se connecter</a></div>
+        <button class="cart" type="button" aria-label="Panier, 0 article">
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M3 4h2l2.4 11.2a2 2 0 0 0 2 1.6h7.7a2 2 0 0 0 2-1.5L21 8H6.2M10 21a1 1 0 1 0 0-2 1 1 0 0 0 0 2Zm8 0a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"/></svg>
+          <span class="cart__label">Panier</span>
+          <span class="cart__count" id="cart-count">0</span>
+        </button>
+      </div>
     </div>
   </header>
 

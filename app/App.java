@@ -11,11 +11,16 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
@@ -39,6 +44,10 @@ public class App {
                  + "\",\"category\":\"" + json(category) + "\",\"image\":\"" + json(image) + "\"}";
         }
     }
+
+    record User(String email, String salt, String hash) { }
+    static final Map<String, User> USERS = new ConcurrentHashMap<>();      // email -> utilisateur
+    static final Map<String, String> SESSIONS = new ConcurrentHashMap<>(); // SID -> email
 
     static final Map<Integer, Product> PRODUCTS = new LinkedHashMap<>();
     static void product(String name, double price, String description, String category, String unsplashId) {
@@ -97,6 +106,62 @@ public class App {
             send(ex, 200, "application/json", p.toJson());
         });
 
+        for (String page : List.of("login", "signup")) {
+            route(server, "/" + page, ex -> {
+                log(ex, "INFO", "page_view", "page", page);
+                sendFile(ex, STATIC_DIR.resolve("auth.html"));
+            });
+        }
+
+        route(server, "/api/signup", ex -> {
+            if (!post(ex)) return;
+            Map<String, String> f = form(ex);
+            String email = f.getOrDefault("email", "").trim().toLowerCase(), password = f.getOrDefault("password", "");
+            String reason = !email.matches("[^@\\s]+@[^@\\s]+\\.[^@\\s]+") ? "invalid_email"
+                          : password.length() < 8 ? "weak_password"
+                          : USERS.containsKey(email) ? "email_taken" : null;
+            if (reason != null) {
+                log(ex, "WARN", "signup_failed", "email", email, "reason", reason);
+                send(ex, 400, "application/json", "{\"error\":\"" + reason + "\"}");
+                return;
+            }
+            String salt = UUID.randomUUID().toString(); // UUID v4 = SecureRandom
+            USERS.put(email, new User(email, salt, hash(salt, password)));
+            startSession(ex, email);
+            log(ex, "INFO", "signup_success");
+            send(ex, 200, "application/json", "{\"email\":\"" + json(email) + "\"}");
+        });
+
+        route(server, "/api/login", ex -> {
+            if (!post(ex)) return;
+            Map<String, String> f = form(ex);
+            String email = f.getOrDefault("email", "").trim().toLowerCase();
+            User u = USERS.get(email);
+            String reason = u == null ? "user_not_found"
+                          : !MessageDigest.isEqual(u.hash().getBytes(), hash(u.salt(), f.getOrDefault("password", "")).getBytes()) ? "wrong_password" : null;
+            if (reason != null) {
+                log(ex, "WARN", "login_failed", "email", email, "reason", reason);
+                // Message volontairement identique dans les deux cas (pas d'enumeration de comptes)
+                send(ex, 401, "application/json", "{\"error\":\"invalid_credentials\"}");
+                return;
+            }
+            startSession(ex, email);
+            log(ex, "INFO", "login_success");
+            send(ex, 200, "application/json", "{\"email\":\"" + json(email) + "\"}");
+        });
+
+        route(server, "/api/logout", ex -> {
+            if (!post(ex)) return;
+            if (ex.getAttribute("userId") != null) log(ex, "INFO", "logout");
+            SESSIONS.remove((String) ex.getAttribute("sessionId"));
+            send(ex, 200, "application/json", "{}");
+        });
+
+        route(server, "/api/me", ex -> {
+            Object email = ex.getAttribute("userId");
+            send(ex, 200, "application/json", email == null ? "{\"email\":null}" : "{\"email\":\"" + json(email.toString()) + "\"}");
+        });
+
         route(server, "/hello", ex -> {
             String name = query(ex).getOrDefault("name", "inconnu");
             send(ex, 200, "text/html", page("Hello", "<p>Bonjour " + escape(name) + " !</p>"));
@@ -130,6 +195,7 @@ public class App {
                 ex.getResponseHeaders().add("Set-Cookie", "SID=" + sid + "; Path=/; HttpOnly; SameSite=Lax");
             }
             ex.setAttribute("sessionId", sid);
+            ex.setAttribute("userId", SESSIONS.get(sid));
             try {
                 h.handle(ex);
             } catch (Exception e) {
@@ -186,10 +252,40 @@ public class App {
         return sb.toString();
     }
 
+    /** SHA-256(sel + mot de passe) en hexa. Suffisant pour la demo (en prod : PBKDF2/bcrypt). */
+    static String hash(String salt, String password) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest((salt + password).getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
+    }
+
+    /** Nouveau SID a la connexion (anti fixation de session), l'ancien est invalide. */
+    static void startSession(HttpExchange ex, String email) {
+        SESSIONS.remove((String) ex.getAttribute("sessionId"));
+        String sid = UUID.randomUUID().toString();
+        SESSIONS.put(sid, email);
+        ex.getResponseHeaders().put("Set-Cookie", List.of("SID=" + sid + "; Path=/; HttpOnly; SameSite=Lax"));
+        ex.setAttribute("sessionId", sid);
+        ex.setAttribute("userId", email);
+    }
+
+    static boolean post(HttpExchange ex) throws IOException {
+        if (ex.getRequestMethod().equals("POST")) return true;
+        send(ex, 405, "application/json", "{\"error\":\"method_not_allowed\"}");
+        return false;
+    }
+
+    static Map<String, String> form(HttpExchange ex) throws IOException {
+        return parse(new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+    }
+
     static Map<String, String> query(HttpExchange ex) {
+        return parse(ex.getRequestURI().getRawQuery());
+    }
+
+    static Map<String, String> parse(String raw) {
         Map<String, String> m = new HashMap<>();
-        String raw = ex.getRequestURI().getRawQuery();
-        if (raw == null) return m;
+        if (raw == null || raw.isEmpty()) return m;
         for (String kv : raw.split("&")) {
             String[] p = kv.split("=", 2);
             m.put(URLDecoder.decode(p[0], StandardCharsets.UTF_8),

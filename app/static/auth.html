@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Connexion — BricoShop</title>
+  <link rel="icon" href="/static/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/auth.js" defer></script>
+</head>
+<body class="auth-page">
+  <header class="header">
+    <div class="container header__inner">
+      <a class="logo" href="/" aria-label="BricoShop, accueil">
+        <img src="/static/logo.svg" alt="" width="36" height="36">
+        <span>Brico<b>Shop</b></span>
+      </a>
+      <a class="link" href="/">← Retour à la boutique</a>
+    </div>
+  </header>
+
+  <main class="auth">
+    <form class="auth__card" id="auth-form" novalidate>
+      <h1 id="auth-title">Connexion</h1>
+      <p class="muted" id="auth-lead">Heureux de vous revoir ! Connectez-vous pour accéder à votre panier.</p>
+      <p class="alert" id="auth-error" role="alert" hidden></p>
+      <label class="field">
+        <span>Adresse e-mail</span>
+        <input type="email" name="email" autocomplete="email" required placeholder="vous@exemple.fr">
+      </label>
+      <label class="field">
+        <span>Mot de passe</span>
+        <input type="password" name="password" autocomplete="current-password" required minlength="8" placeholder="8 caractères minimum">
+      </label>
+      <button class="btn btn--block" type="submit" id="auth-submit">Se connecter</button>
+      <p class="auth__switch" id="auth-switch">Pas encore de compte ? <a href="/signup">Créer un compte</a></p>
+    </form>
+  </main>
+</body>
+</html>

@@ -87,6 +87,14 @@ modal.addEventListener('click', (e) => {
   if (e.target === modal || e.target.closest('[data-close]')) modal.close();
 });
 
+// Etat de connexion dans le header
+fetch('/api/me').then((r) => r.json()).then(({ email }) => {
+  if (!email) return;
+  $('#account').innerHTML = `<span class="account__email" title="${esc(email)}">${esc(email)}</span>
+    <button class="link" type="button" id="logout">Déconnexion</button>`;
+  $('#logout').addEventListener('click', () => fetch('/api/logout', { method: 'POST' }).then(() => location.reload()));
+});
+
 fetch('/api/products')
   .then((r) => r.json())
   .then((data) => { products = data; renderFilters(); renderGrid(); })
