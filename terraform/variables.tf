@@ -1,7 +1,7 @@
 variable "aws_region" {
   description = "Region AWS de deploiement"
   type        = string
-  default     = "eu-west-3"
+  default     = "eu-west-1"
 }
 
 variable "domain_name" {
