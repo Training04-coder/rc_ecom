@@ -48,6 +48,8 @@ public class App {
     record User(String email, String salt, String hash) { }
     static final Map<String, User> USERS = new ConcurrentHashMap<>();      // email -> utilisateur
     static final Map<String, String> SESSIONS = new ConcurrentHashMap<>(); // SID -> email
+    static final Map<String, Map<Integer, Integer>> CARTS = new ConcurrentHashMap<>(); // email -> (productId -> quantite)
+    static final double CHECKOUT_ERROR_RATE = Double.parseDouble(System.getenv().getOrDefault("CHECKOUT_ERROR_RATE", "0.05"));
 
     static final Map<Integer, Product> PRODUCTS = new LinkedHashMap<>();
     static void product(String name, double price, String description, String category, String unsplashId) {
@@ -159,7 +161,66 @@ public class App {
 
         route(server, "/api/me", ex -> {
             Object email = ex.getAttribute("userId");
-            send(ex, 200, "application/json", email == null ? "{\"email\":null}" : "{\"email\":\"" + json(email.toString()) + "\"}");
+            send(ex, 200, "application/json", email == null ? "{\"email\":null,\"cartSize\":0}"
+                : "{\"email\":\"" + json(email.toString()) + "\",\"cartSize\":" + size(CARTS.getOrDefault(email, Map.of())) + "}");
+        });
+
+        route(server, "/cart", ex -> {
+            log(ex, "INFO", "page_view", "page", "cart");
+            sendFile(ex, STATIC_DIR.resolve("cart.html"));
+        });
+
+        // GET /api/cart | POST /api/cart (productId, quantity) | PUT /api/cart/{id} (quantity) | DELETE /api/cart/{id}
+        route(server, "/api/cart", ex -> {
+            String method = ex.getRequestMethod(), rest = ex.getRequestURI().getPath().substring("/api/cart".length());
+            String event = method.equals("GET") ? "cart_view" : method.equals("DELETE") ? "cart_remove" : "cart_add";
+            String email = (String) ex.getAttribute("userId");
+            if (email == null) { fail(ex, 401, event, "not_authenticated"); return; }
+            Map<Integer, Integer> cart = CARTS.computeIfAbsent(email, k -> new LinkedHashMap<>());
+            Product p = rest.isEmpty() ? null : PRODUCTS.get(num(rest.substring(1)));
+            if (rest.isEmpty() && method.equals("GET")) {
+                log(ex, "INFO", "cart_view", "cartTotal", total(cart), "cartSize", size(cart));
+            } else if (rest.isEmpty() && method.equals("POST")) {
+                Map<String, String> f = form(ex);
+                p = PRODUCTS.get(num(f.get("productId")));
+                int qty = num(f.getOrDefault("quantity", "1"));
+                if (p == null) { fail(ex, 400, event, "product_not_found"); return; }
+                if (qty < 1 || qty > 99) { fail(ex, 400, event, "invalid_quantity"); return; }
+                cart.merge(p.id(), qty, Integer::sum);
+                log(ex, "INFO", "cart_add", "productId", p.id(), "productName", p.name(), "quantity", qty, "cartTotal", total(cart), "cartSize", size(cart));
+            } else if (p != null && method.equals("PUT")) {
+                int qty = num(form(ex).get("quantity")), delta = qty - cart.getOrDefault(p.id(), 0);
+                if (qty < 0 || qty > 99) { fail(ex, 400, event, "invalid_quantity"); return; }
+                if (qty == 0) cart.remove(p.id()); else cart.put(p.id(), qty);
+                if (delta != 0) log(ex, "INFO", delta > 0 ? "cart_add" : "cart_remove", "productId", p.id(), "productName", p.name(),
+                                    "quantity", Math.abs(delta), "cartTotal", total(cart), "cartSize", size(cart));
+            } else if (p != null && method.equals("DELETE")) {
+                Integer old = cart.remove(p.id());
+                if (old == null) { fail(ex, 404, event, "not_in_cart"); return; }
+                log(ex, "INFO", "cart_remove", "productId", p.id(), "productName", p.name(), "quantity", old, "cartTotal", total(cart), "cartSize", size(cart));
+            } else {
+                fail(ex, rest.isEmpty() ? 405 : 404, event, rest.isEmpty() ? "method_not_allowed" : "product_not_found");
+                return;
+            }
+            send(ex, 200, "application/json", cartJson(cart));
+        });
+
+        route(server, "/api/checkout", ex -> {
+            if (!post(ex)) return;
+            String email = (String) ex.getAttribute("userId");
+            if (email == null) { fail(ex, 401, "checkout_failed", "not_authenticated"); return; }
+            Map<Integer, Integer> cart = CARTS.computeIfAbsent(email, k -> new LinkedHashMap<>());
+            double total = total(cart);
+            int size = size(cart);
+            log(ex, "INFO", "checkout_started", "cartTotal", total, "cartSize", size);
+            if (cart.isEmpty()) { fail(ex, 400, "checkout_failed", "empty_cart"); return; }
+            try { Thread.sleep(50 + (long) (Math.random() * 250)); } catch (InterruptedException ignored) { } // appel "paiement" simule
+            // Panne volontaire (demo CloudWatch) : l'exception remonte au wrapper => app_error en ERROR + HTTP 500
+            if (Math.random() < CHECKOUT_ERROR_RATE) throw new IllegalStateException("Payment gateway timeout");
+            String orderId = "CMD-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+            cart.clear();
+            log(ex, "INFO", "checkout_success", "orderId", orderId, "cartTotal", total, "cartSize", size);
+            send(ex, 200, "application/json", "{\"orderId\":\"" + orderId + "\",\"cartTotal\":" + total + "}");
         });
 
         route(server, "/hello", ex -> {
@@ -267,6 +328,29 @@ public class App {
         ex.getResponseHeaders().put("Set-Cookie", List.of("SID=" + sid + "; Path=/; HttpOnly; SameSite=Lax"));
         ex.setAttribute("sessionId", sid);
         ex.setAttribute("userId", email);
+    }
+
+    /** Echec metier : log WARN avec reason + reponse JSON {"error": reason}. */
+    static void fail(HttpExchange ex, int status, String event, String reason) throws IOException {
+        log(ex, "WARN", event, "reason", reason);
+        send(ex, status, "application/json", "{\"error\":\"" + reason + "\"}");
+    }
+
+    static int num(String s) {
+        try { return Integer.parseInt(s); } catch (NumberFormatException e) { return -1; }
+    }
+
+    static int size(Map<Integer, Integer> cart) {
+        return cart.values().stream().mapToInt(Integer::intValue).sum();
+    }
+
+    static double total(Map<Integer, Integer> cart) {
+        return Math.round(cart.entrySet().stream().mapToDouble(e -> PRODUCTS.get(e.getKey()).price() * e.getValue()).sum() * 100) / 100.0;
+    }
+
+    static String cartJson(Map<Integer, Integer> cart) {
+        return cart.entrySet().stream().map(e -> "{\"product\":" + PRODUCTS.get(e.getKey()).toJson() + ",\"quantity\":" + e.getValue() + "}")
+                   .collect(Collectors.joining(",", "{\"items\":[", "],\"cartTotal\":" + total(cart) + ",\"cartSize\":" + size(cart) + "}"));
     }
 
     static boolean post(HttpExchange ex) throws IOException {

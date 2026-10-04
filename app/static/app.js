@@ -42,7 +42,7 @@ function renderGrid() {
         <p>${esc(p.description)}</p>
         <div class="card__foot">
           <strong class="price">${price.format(p.price)}</strong>
-          <button class="btn btn--ghost" type="button" tabindex="-1">Voir</button>
+          <button class="btn" type="button" data-add="${p.id}">Ajouter</button>
         </div>
       </div>
     </article>`).join('');
@@ -62,6 +62,7 @@ async function openProduct(id) {
   $('#modal-title').textContent = p.name;
   $('#modal-desc').textContent = p.description;
   $('#modal-price').textContent = price.format(p.price);
+  $('#modal-add').dataset.add = p.id;
   $('#modal').showModal();
 }
 
@@ -73,10 +74,31 @@ $('#filters').addEventListener('click', (e) => {
   renderGrid();
 });
 
+// Ajout au panier : redirige vers /login si non connecté
+async function addToCart(id) {
+  const res = await fetch('/api/cart', { method: 'POST', body: new URLSearchParams({ productId: id, quantity: 1 }) });
+  if (res.status === 401) { location.href = '/login'; return; }
+  if (!res.ok) { toast("Impossible d'ajouter ce produit."); return; }
+  $('#cart-count').textContent = (await res.json()).cartSize;
+  toast('Ajouté au panier ✓');
+}
+
+let toastTimer;
+function toast(msg) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, 2200);
+}
+
 $('#grid').addEventListener('click', (e) => {
+  const add = e.target.closest('[data-add]');
+  if (add) { addToCart(add.dataset.add); return; }
   const card = e.target.closest('.card');
   if (card) openProduct(card.dataset.id);
 });
+$('#modal-add').addEventListener('click', (e) => { addToCart(e.target.dataset.add); $('#modal').close(); });
 $('#grid').addEventListener('keydown', (e) => {
   const card = e.target.closest('.card');
   if (card && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openProduct(card.dataset.id); }
@@ -88,7 +110,8 @@ modal.addEventListener('click', (e) => {
 });
 
 // Etat de connexion dans le header
-fetch('/api/me').then((r) => r.json()).then(({ email }) => {
+fetch('/api/me').then((r) => r.json()).then(({ email, cartSize }) => {
+  $('#cart-count').textContent = cartSize;
   if (!email) return;
   $('#account').innerHTML = `<span class="account__email" title="${esc(email)}">${esc(email)}</span>
     <button class="link" type="button" id="logout">Déconnexion</button>`;

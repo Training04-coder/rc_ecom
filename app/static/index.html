@@ -18,11 +18,11 @@
       </a>
       <div class="header__actions">
         <div class="account" id="account"><a class="link" href="/login">Se connecter</a></div>
-        <button class="cart" type="button" aria-label="Panier, 0 article">
+        <a class="cart" href="/cart" aria-label="Voir le panier">
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M3 4h2l2.4 11.2a2 2 0 0 0 2 1.6h7.7a2 2 0 0 0 2-1.5L21 8H6.2M10 21a1 1 0 1 0 0-2 1 1 0 0 0 0 2Zm8 0a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"/></svg>
           <span class="cart__label">Panier</span>
           <span class="cart__count" id="cart-count">0</span>
-        </button>
+        </a>
       </div>
     </div>
   </header>
@@ -60,9 +60,10 @@
       <p id="modal-desc"></p>
       <div class="modal__foot">
         <strong class="price" id="modal-price"></strong>
-        <button class="btn" type="button" disabled title="Le panier arrive à la prochaine étape">Ajouter au panier</button>
+        <button class="btn" type="button" id="modal-add">Ajouter au panier</button>
       </div>
     </div>
   </dialog>
+  <div class="toast" id="toast" role="status" hidden></div>
 </body>
 </html>

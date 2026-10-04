@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mon panier — BricoShop</title>
+  <link rel="icon" href="/static/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/cart.js" defer></script>
+</head>
+<body>
+  <header class="header">
+    <div class="container header__inner">
+      <a class="logo" href="/" aria-label="BricoShop, accueil">
+        <img src="/static/logo.svg" alt="" width="36" height="36">
+        <span>Brico<b>Shop</b></span>
+      </a>
+      <a class="link" href="/">← Continuer mes achats</a>
+    </div>
+  </header>
+
+  <main class="container cart-page">
+    <h1>Mon panier</h1>
+    <p class="alert" id="cart-msg" role="alert" hidden></p>
+    <div class="cart-layout">
+      <ul class="lines" id="lines"><li class="muted">Chargement…</li></ul>
+      <aside class="summary">
+        <h2>Récapitulatif</h2>
+        <p class="summary__row"><span>Articles</span><span id="sum-size">0</span></p>
+        <p class="summary__row"><span>Livraison</span><span>Offerte</span></p>
+        <p class="summary__row summary__total"><span>Total</span><strong id="sum-total">0,00 €</strong></p>
+        <button class="btn btn--block" type="button" id="checkout" disabled>Commander</button>
+        <p class="muted summary__note">Paiement simulé : aucune commande réelle.</p>
+      </aside>
+    </div>
+  </main>
+</body>
+</html>
