@@ -78,11 +78,14 @@ resource "aws_instance" "web" {
   user_data_replace_on_change = true
   credit_specification { cpu_credits = "standard" }
 
-  user_data = templatefile("${path.module}/user_data.sh.tftpl", {
-    fqdn      = local.fqdn
-    app_java  = file("${path.module}/../app/App.java")
-    demo_vuln = var.demo_vuln
-  })
+  # user_data compresse (gzip, decompresse par cloud-init) pour rester sous la limite AWS de 16 Ko.
+  # replace() retire les CRLF d'un checkout Windows, sinon bash et les heredocs cassent sur Linux.
+  user_data_base64 = base64gzip(replace(templatefile("${path.module}/user_data.sh.tftpl", {
+    fqdn         = local.fqdn
+    app_java     = file("${path.module}/../app/App.java")
+    static_files = { for f in fileset("${path.module}/../app/static", "*") : f => file("${path.module}/../app/static/${f}") }
+    demo_vuln    = var.demo_vuln
+  }), "\r\n", "\n"))
 
   metadata_options {
     http_tokens = "required" # IMDSv2 obligatoire

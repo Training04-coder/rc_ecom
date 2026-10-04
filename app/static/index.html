@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BricoShop — Tout pour le bricolage</title>
+  <meta name="description" content="BricoShop : outillage, peinture, mesure et quincaillerie au meilleur prix.">
+  <link rel="icon" href="/static/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="header">
+    <div class="container header__inner">
+      <a class="logo" href="/" aria-label="BricoShop, accueil">
+        <img src="/static/logo.svg" alt="" width="36" height="36">
+        <span>Brico<b>Shop</b></span>
+      </a>
+      <button class="cart" type="button" aria-label="Panier, 0 article">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M3 4h2l2.4 11.2a2 2 0 0 0 2 1.6h7.7a2 2 0 0 0 2-1.5L21 8H6.2M10 21a1 1 0 1 0 0-2 1 1 0 0 0 0 2Zm8 0a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"/></svg>
+        <span class="cart__label">Panier</span>
+        <span class="cart__count" id="cart-count">0</span>
+      </button>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="container">
+        <p class="hero__eyebrow">Livraison offerte dès 49 €</p>
+        <h1>L'outillage qui suit vos projets, du premier trou à la dernière couche.</h1>
+        <p class="hero__lead">Électroportatif, outils à main, mesure, peinture et quincaillerie : une sélection testée par des pros.</p>
+      </div>
+    </section>
+
+    <section class="container catalog" aria-labelledby="catalog-title">
+      <div class="catalog__head">
+        <h2 id="catalog-title">Nos produits</h2>
+        <div class="filters" id="filters" role="group" aria-label="Filtrer par catégorie"></div>
+      </div>
+      <div class="grid" id="grid" aria-live="polite">
+        <p class="muted">Chargement du catalogue…</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container">BricoShop · site de démonstration pour formation, aucune commande réelle.</div>
+  </footer>
+
+  <dialog class="modal" id="modal" aria-labelledby="modal-title">
+    <button class="modal__close" type="button" aria-label="Fermer" data-close>&times;</button>
+    <img class="modal__img" id="modal-img" alt="">
+    <div class="modal__body">
+      <span class="tag" id="modal-cat"></span>
+      <h3 id="modal-title"></h3>
+      <p id="modal-desc"></p>
+      <div class="modal__foot">
+        <strong class="price" id="modal-price"></strong>
+        <button class="btn" type="button" disabled title="Le panier arrive à la prochaine étape">Ajouter au panier</button>
+      </div>
+    </div>
+  </dialog>
+</body>
+</html>

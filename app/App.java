@@ -9,14 +9,18 @@ import java.io.StringWriter;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
- * Mini site web Java (zero dependance, zero build) pour lab AWS Security Agent.
- * Lancement : java App.java   (Java 11+ "source launcher")
+ * BricoShop : mini e-commerce de bricolage (zero dependance, zero build) pour formation CloudWatch.
+ * Lancement : java App.java   (Java 11+ "source launcher"), depuis le dossier contenant static/
  * Ecoute sur 127.0.0.1:8080 ; Caddy fait le HTTPS devant.
  * DEMO_VULN=true active volontairement une XSS reflechie sur /search (lab uniquement).
  * Logs : une ligne JSON par evenement sur stdout + LOG_FILE (defaut /var/log/bricoshop/app.log).
@@ -25,7 +29,37 @@ public class App {
 
     static final boolean DEMO_VULN = "true".equalsIgnoreCase(System.getenv("DEMO_VULN"));
     static final String LOG_FILE = System.getenv().getOrDefault("LOG_FILE", "/var/log/bricoshop/app.log");
+    static final Path STATIC_DIR = Path.of(System.getenv().getOrDefault("STATIC_DIR", "static")).toAbsolutePath().normalize();
+    static final Map<String, String> MIME = Map.of("html", "text/html", "css", "text/css", "js", "application/javascript", "svg", "image/svg+xml");
     static PrintWriter logFile;
+
+    record Product(int id, String name, double price, String description, String category, String image) {
+        String toJson() {
+            return "{\"id\":" + id + ",\"name\":\"" + json(name) + "\",\"price\":" + price + ",\"description\":\"" + json(description)
+                 + "\",\"category\":\"" + json(category) + "\",\"image\":\"" + json(image) + "\"}";
+        }
+    }
+
+    static final Map<Integer, Product> PRODUCTS = new LinkedHashMap<>();
+    static void product(String name, double price, String description, String category, String unsplashId) {
+        int id = PRODUCTS.size() + 1;
+        PRODUCTS.put(id, new Product(id, name, price, description, category,
+            "https://images.unsplash.com/photo-" + unsplashId + "?w=600&h=400&fit=crop&auto=format&q=70"));
+    }
+    static {
+        product("Perceuse-visseuse sans fil 18V", 129.90, "Mandrin 13 mm, 2 vitesses, livrée avec batterie 2 Ah et chargeur.", "Électroportatif", "1572981779307-38b8cabb2407");
+        product("Perceuse à percussion compacte", 89.90, "Légère et puissante pour percer bois, métal et béton.", "Électroportatif", "1606676539940-12768ce0e762");
+        product("Scie circulaire 1400W", 149.00, "Coupe jusqu'à 55 mm, guide parallèle et lame carbure 24 dents.", "Électroportatif", "1695734964302-262ec797a8d9");
+        product("Marteau de charpentier", 19.90, "Tête forgée 500 g, arrache-clou, manche antivibration.", "Outillage à main", "1607870411590-d5e9e06da09a");
+        product("Jeu de 12 tournevis", 24.90, "Plats, cruciformes et Torx, embouts magnétiques.", "Outillage à main", "1507126694149-a8685f99aa4f");
+        product("Pince coupante diagonale", 16.90, "Acier chrome-vanadium, poignées bi-matière, 180 mm.", "Outillage à main", "1645449781249-27c94448f6f7");
+        product("Niveau à bulle 60 cm", 22.50, "Profil aluminium, 3 fioles, précision 0,5 mm/m.", "Mesure", "1567361808976-260065224468");
+        product("Mètre ruban 5 m", 9.90, "Ruban acier 25 mm avec blocage et clip ceinture.", "Mesure", "1716698286313-9a2349d41110");
+        product("Peinture murale blanche 2,5 L", 34.90, "Mate, lessivable, haut pouvoir couvrant, env. 25 m².", "Peinture", "1673297821205-e0575bbc2ab7");
+        product("Rouleau anti-goutte 180 mm", 12.90, "Manchon microfibre pour murs et plafonds, monture renforcée.", "Peinture", "1562259949-e8e7689d7828");
+        product("Assortiment vis et écrous 500 pcs", 14.90, "Vis, boulons et écrous zingués dans un coffret à compartiments.", "Quincaillerie", "1710129084868-9ff5127b7e6e");
+        product("Panneau mural porte-outils", 39.90, "Panneau perforé 120 × 60 cm avec 20 crochets assortis.", "Quincaillerie", "1602052793312-b99c2a9ee797");
+    }
 
     public static void main(String[] args) throws IOException {
         int port = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
@@ -36,11 +70,31 @@ public class App {
 
         route(server, "/", ex -> {
             if (!ex.getRequestURI().getPath().equals("/")) { send(ex, 404, "text/plain", "Not found"); return; }
-            send(ex, 200, "text/html", page("Accueil",
-                "<p>Mini site Java deploye sur AWS avec Terraform.</p>"
-              + "<ul><li><a href=\"/hello?name=Formation\">/hello?name=...</a></li>"
-              + "<li><a href=\"/search?q=test\">/search?q=...</a></li>"
-              + "<li><a href=\"/health\">/health</a></li></ul>"));
+            log(ex, "INFO", "page_view", "page", "home");
+            sendFile(ex, STATIC_DIR.resolve("index.html"));
+        });
+
+        route(server, "/static/", ex -> {
+            Path f = STATIC_DIR.resolve(ex.getRequestURI().getPath().substring("/static/".length())).normalize();
+            if (!f.startsWith(STATIC_DIR) || !Files.isRegularFile(f)) { send(ex, 404, "text/plain", "Not found"); return; }
+            sendFile(ex, f);
+        });
+
+        route(server, "/api/products", ex -> {
+            String rest = ex.getRequestURI().getPath().substring("/api/products".length());
+            if (rest.isEmpty()) {
+                send(ex, 200, "application/json", PRODUCTS.values().stream().map(Product::toJson).collect(Collectors.joining(",", "[", "]")));
+                return;
+            }
+            Product p = rest.matches("/\\d{1,9}") ? PRODUCTS.get(Integer.parseInt(rest.substring(1))) : null;
+            if (p == null) {
+                log(ex, "WARN", "product_view", "productId", rest.substring(Math.min(1, rest.length())),
+                    "reason", rest.matches("/\\d{1,9}") ? "product_not_found" : "invalid_product_id");
+                send(ex, 404, "application/json", "{\"error\":\"product_not_found\"}");
+                return;
+            }
+            log(ex, "INFO", "product_view", "productId", p.id(), "productName", p.name(), "category", p.category(), "price", p.price());
+            send(ex, 200, "application/json", p.toJson());
         });
 
         route(server, "/hello", ex -> {
@@ -160,5 +214,10 @@ public class App {
         ex.getResponseHeaders().set("Content-Type", type + "; charset=utf-8");
         ex.sendResponseHeaders(code, b.length);
         try (OutputStream os = ex.getResponseBody()) { os.write(b); }
+    }
+
+    static void sendFile(HttpExchange ex, Path f) throws IOException {
+        String name = f.getFileName().toString();
+        send(ex, 200, MIME.getOrDefault(name.substring(name.lastIndexOf('.') + 1), "application/octet-stream"), Files.readString(f));
     }
 }

@@ -5,10 +5,15 @@ set -euxo pipefail
 dnf install -y java-21-amazon-corretto-devel
 
 # 2) Application (single-file Java, lancee sans build)
-mkdir -p /opt/app
-cat > /opt/app/App.java <<'JAVA'
+mkdir -p /opt/app/static
+cat > /opt/app/App.java <<'BRICO_EOF'
 ${app_java}
-JAVA
+BRICO_EOF
+%{ for name, content in static_files ~}
+cat > /opt/app/static/${name} <<'BRICO_EOF'
+${content}
+BRICO_EOF
+%{ endfor ~}
 
 cat > /etc/systemd/system/javaapp.service <<UNIT
 [Unit]
@@ -19,6 +24,7 @@ After=network-online.target
 Environment=PORT=8080
 Environment=BIND=127.0.0.1
 Environment=DEMO_VULN=${demo_vuln}
+WorkingDirectory=/opt/app
 ExecStart=/usr/bin/java /opt/app/App.java
 Restart=always
 DynamicUser=yes
