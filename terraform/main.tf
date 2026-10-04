@@ -46,7 +46,7 @@ resource "aws_security_group" "web" {
   }
 }
 
-# --- Role IAM minimal : Session Manager + lecture du bucket de code ---
+# --- Role IAM minimal : Session Manager + lecture S3 + ecriture CloudWatch Logs ---
 resource "aws_iam_role" "ec2" {
   name_prefix = "secagent-java-ec2-"
   assume_role_policy = jsonencode({
@@ -74,6 +74,34 @@ resource "aws_iam_role_policy" "s3_read" {
       { Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.app.arn}/*" },
     ]
   })
+}
+
+# Droits minimaux CloudWatch Logs, restreints au seul log group /bricoshop/app
+resource "aws_iam_role_policy" "cw_logs" {
+  name = "ecriture-logs-cloudwatch"
+  role = aws_iam_role.ec2.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogStreams",
+      ]
+      Resource = [
+        aws_cloudwatch_log_group.app.arn,
+        "${aws_cloudwatch_log_group.app.arn}:*",
+      ]
+    }]
+  })
+}
+
+# --- CloudWatch Logs : destination des logs applicatifs ---
+resource "aws_cloudwatch_log_group" "app" {
+  name              = "/bricoshop/app"
+  retention_in_days = 30
 }
 
 # --- S3 prive : code de l'appli (App.java + static/), telecharge par l'EC2 au demarrage ---
@@ -127,11 +155,12 @@ resource "aws_instance" "web" {
     bucket    = aws_s3_bucket.app.id
     region    = var.aws_region
     app_hash  = local.app_hash
+    log_group = aws_cloudwatch_log_group.app.name
     demo_vuln = var.demo_vuln
   }), "\r\n", "\n")
 
-  # Les fichiers et le droit de lecture doivent exister avant le demarrage de l'instance
-  depends_on = [aws_s3_object.app, aws_iam_role_policy.s3_read]
+  # Code, droits et log group doivent exister avant le demarrage de l'instance
+  depends_on = [aws_s3_object.app, aws_iam_role_policy.s3_read, aws_iam_role_policy.cw_logs, aws_cloudwatch_log_group.app]
 
   metadata_options {
     http_tokens = "required" # IMDSv2 obligatoire
