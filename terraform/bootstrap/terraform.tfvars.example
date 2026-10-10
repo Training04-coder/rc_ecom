@@ -1,0 +1,9 @@
+aws_region  = "eu-west-1"
+github_org  = "lims931"
+github_repo = "secagent-lab-beautify"
+
+# Bucket de state : doit etre GLOBALEMENT unique. Laisser vide => "<org>-<repo>-tfstate".
+# state_bucket_name = "lims931-secagent-lab-beautify-tfstate"
+
+# (Optionnel) restreint les ecritures DNS du role deploy a une seule zone.
+# route53_zone_id = "Z0123456789ABCDEFGHIJ"

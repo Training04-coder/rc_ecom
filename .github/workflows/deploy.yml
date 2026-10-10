@@ -1,0 +1,178 @@
+name: build-and-deploy
+
+# PR  -> build + compile-check + terraform plan (role lecture seule, via OIDC)
+# push sur la branche par defaut -> build + plan + apply (role deploy, env "production")
+#
+# NB : la branche par defaut du depot est "master". Si tu renommes en "main",
+#      remplace "master" aux deux endroits ci-dessous (push.branches et le if du job deploy).
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+# Authentification AWS par OIDC : aucun secret d'acces IAM stocke dans GitHub.
+permissions:
+  id-token: write # obtenir le token OIDC
+  contents: read # checkout du code
+  pull-requests: write # poster le resume du plan en commentaire de PR
+
+# Jamais deux `apply` en parallele sur la meme ref.
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-west-1
+  # Variables NON secretes fournies cote GitHub (Settings > Variables).
+  TF_VAR_domain_name: ${{ vars.TF_DOMAIN_NAME }}
+  TF_VAR_subdomain: ${{ vars.TF_SUBDOMAIN }}
+  TF_VAR_aws_region: eu-west-1
+
+jobs:
+  # ------------------------------------------------------------------ build
+  build:
+    name: Build (compile-check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "21"
+          # Pas de `cache:` : l'appli est zero-dependance (ni Maven ni Gradle),
+          # il n'y a donc aucun lockfile de dependances a mettre en cache.
+          # La distribution du JDK, elle, est deja mise en cache par l'action.
+
+      - name: Compile-check (javac App.java)
+        run: |
+          mkdir -p build/classes
+          javac -d build/classes app/App.java
+          echo "Compilation OK."
+          # Pas de tests unitaires dans ce projet (single-file, zero build).
+
+      - name: Upload artefact source
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: app-source
+          path: app/App.java
+          retention-days: 7
+
+  # ---------------------------------------------------- plan (sur les PR)
+  plan:
+    name: Terraform plan (PR)
+    if: github.event_name == 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Configure AWS credentials (OIDC, role plan)
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_PLAN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.11.4
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init
+        run: terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+
+      - name: Terraform validate
+        run: terraform validate -no-color
+
+      - name: Terraform plan
+        id: plan
+        # -lock=false : le role plan est en lecture seule, il ne peut pas ecrire le lockfile.
+        run: terraform plan -no-color -input=false -lock=false -out=tfplan
+        continue-on-error: true
+
+      - name: Commentaire de plan sur la PR
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        env:
+          # Passe par l'env (et non par interpolation dans le script) : evite les
+          # soucis d'echappement et le risque d'injection de script.
+          PLAN_STDOUT: ${{ steps.plan.outputs.stdout }}
+          PLAN_OUTCOME: ${{ steps.plan.outcome }}
+        with:
+          script: |
+            const out = process.env.PLAN_STDOUT || '(aucune sortie)';
+            const outcome = process.env.PLAN_OUTCOME;
+            const max = 60000;
+            const body = [
+              '#### Terraform plan `' + outcome + '`',
+              '<details><summary>Afficher le plan</summary>',
+              '',
+              '```terraform',
+              out.length > max ? out.slice(0, max) + '\n... (tronque)' : out,
+              '```',
+              '',
+              '</details>',
+            ].join('\n');
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const marker = '<!-- tf-plan-comment -->';
+            const comments = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const existing = comments.data.find(c => c.body && c.body.includes(marker));
+            const finalBody = marker + '\n' + body;
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: finalBody });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body: finalBody });
+            }
+
+      - name: Echec si le plan a echoue
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+  # ------------------------------------------ deploy (push sur master only)
+  deploy:
+    name: Terraform apply (production)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: build
+    runs-on: ubuntu-latest
+    # L'environnement "production" (required reviewers) protege l'apply ET
+    # conditionne la confiance OIDC du role deploy (sub = ...:environment:production).
+    environment: production
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Configure AWS credentials (OIDC, role deploy)
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_DEPLOY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.11.4
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init
+        run: terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+
+      - name: Terraform validate
+        run: terraform validate -no-color
+
+      - name: Terraform plan
+        run: terraform plan -no-color -input=false -out=tfplan
+
+      - name: Terraform apply
+        run: terraform apply -no-color -input=false tfplan
