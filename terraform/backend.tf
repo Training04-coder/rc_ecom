@@ -1,17 +1,15 @@
-# Backend S3 distant pour partager le state entre ta machine et la CI.
-# Configuration PARTIELLE : le nom du bucket (cree par terraform/bootstrap/) est
-# fourni au moment du `terraform init` via -backend-config, pour ne coder en dur
-# aucune valeur specifique a un compte dans le depot.
+# Backend S3 distant, partage entre la CI et la machine du participant.
+# Configuration PARTIELLE : bucket et region sont propres a chaque compte AWS,
+# ils sont fournis au `terraform init` (le workflow le fait automatiquement) :
 #
-#   terraform init \
-#     -backend-config="bucket=<state_bucket du bootstrap>" \
-#     -migrate-state        # la 1re fois seulement, pour pousser le state local
+#   terraform init -backend-config="bucket=bricoshop-tfstate-<account_id>" \
+#                  -backend-config="region=<region>"
 #
-# Voir docs/ci-cd.md.
+# Le bootstrap affiche cette commande toute prete (output local_init_command).
 terraform {
   backend "s3" {
-    key     = "secagent-lab-beautify/terraform.tfstate"
-    region  = "eu-west-1"
-    encrypt = true
+    key          = "bricoshop/terraform.tfstate"
+    encrypt      = true
+    use_lockfile = true # verrou natif S3 (Terraform >= 1.10)
   }
 }

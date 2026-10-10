@@ -19,12 +19,9 @@ Pas de Docker, pas de Maven, pas d'ECR, pas d'ALB, pas d'ACM : le moins de pièc
    - domaine chez un autre registrar ? créer la hosted zone dans Route 53 et recopier ses 4 NS chez le registrar.
 
 ## Déployer
-```bash
-cd terraform
-cp terraform.tfvars.example terraform.tfvars   # mettre ton domain_name
-terraform init
-terraform apply
-```
+Le déploiement passe par GitHub Actions (authentification OIDC, aucune clé IAM) :
+suivre la fiche **[docs/ci-cd.md](docs/ci-cd.md)** (bootstrap une fois, 4 variables GitHub, push).
+
 Attendre 2–3 min (install Java + Caddy + certificat), puis :
 ```bash
 curl https://app.mondomaine.tld/health

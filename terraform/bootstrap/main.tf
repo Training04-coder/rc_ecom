@@ -1,36 +1,52 @@
 data "aws_caller_identity" "current" {}
 
+# Echoue des le bootstrap si la zone du participant n'existe pas dans son compte.
+data "aws_route53_zone" "site" {
+  name         = var.domain_name
+  private_zone = false
+}
+
 locals {
   account_id   = data.aws_caller_identity.current.account_id
-  subject_base = "repo:${var.github_org}/${var.github_repo}"
-  state_bucket = var.state_bucket_name != "" ? var.state_bucket_name : lower("${var.github_org}-${var.github_repo}-tfstate")
+  subject_base = "repo:${var.github_owner}/${var.github_repo}"
   audience     = "sts.amazonaws.com"
   oidc_host    = "token.actions.githubusercontent.com"
+  oidc_arn     = "arn:aws:iam::${local.account_id}:oidc-provider/${local.oidc_host}"
 
-  # ARN des ressources gerees par le Terraform principal (name_prefix / bucket_prefix
-  # => on ne connait pas le suffixe aleatoire, d'ou les wildcards sur le prefixe).
-  app_bucket_arn   = "arn:aws:s3:::${var.managed_resource_prefix}app-*"
-  ec2_role_arn     = "arn:aws:iam::${local.account_id}:role/${var.managed_resource_prefix}ec2-*"
-  ec2_profile_arn  = "arn:aws:iam::${local.account_id}:instance-profile/${var.managed_resource_prefix}ec2-*"
-  log_group_arn    = "arn:aws:logs:${var.aws_region}:${local.account_id}:log-group:${var.app_log_group_name}"
-  route53_resource = var.route53_zone_id != "" ? "arn:aws:route53:::hostedzone/${var.route53_zone_id}" : "*"
+  # Conventions partagees avec .github/workflows/deploy.yml : le workflow
+  # reconstruit ces noms a partir de vars.AWS_ACCOUNT_ID. Ne pas les changer seuls.
+  state_bucket     = "bricoshop-tfstate-${local.account_id}"
+  role_plan_name   = "github-actions-plan"
+  role_deploy_name = "github-actions-deploy"
+  environment      = "production"
+
+  # Ressources du Terraform principal (name_prefix / bucket_prefix => suffixe
+  # aleatoire inconnu, d'ou les wildcards sur le prefixe).
+  app_bucket_arn  = "arn:aws:s3:::secagent-java-app-*"
+  ec2_role_arn    = "arn:aws:iam::${local.account_id}:role/secagent-java-ec2-*"
+  ec2_profile_arn = "arn:aws:iam::${local.account_id}:instance-profile/secagent-java-ec2-*"
+  log_group_arn   = "arn:aws:logs:${var.aws_region}:${local.account_id}:log-group:/bricoshop/app"
+  zone_arn        = "arn:aws:route53:::hostedzone/${data.aws_route53_zone.site.zone_id}"
 }
 
 # ---------------------------------------------------------------------------
 # 1) Fournisseur OIDC : etablit la confiance GitHub Actions -> AWS STS.
-#    thumbprint_list omis volontairement : le provider AWS >= 5 le calcule, et
-#    AWS securise desormais ce fournisseur via sa propre librairie de confiance.
+#    Un seul par compte : create_oidc_provider = false pour reutiliser l'existant.
+#    thumbprint_list omis : le provider AWS >= 5 le calcule.
 # ---------------------------------------------------------------------------
 resource "aws_iam_openid_connect_provider" "github" {
+  count          = var.create_oidc_provider ? 1 : 0
   url            = "https://${local.oidc_host}"
   client_id_list = [local.audience]
 }
 
 # ---------------------------------------------------------------------------
 # 2) Bucket S3 du state Terraform : versioning + chiffrement + prive.
+#    force_destroy : lab de formation, pour que le nettoyage final passe.
 # ---------------------------------------------------------------------------
 resource "aws_s3_bucket" "state" {
-  bucket = local.state_bucket
+  bucket        = local.state_bucket
+  force_destroy = true
 }
 
 resource "aws_s3_bucket_versioning" "state" {
@@ -59,7 +75,7 @@ resource "aws_s3_bucket_public_access_block" "state" {
 
 # ---------------------------------------------------------------------------
 # 3a) Role PLAN : assumable UNIQUEMENT depuis les pull requests du depot.
-#     Lecture seule + acces au bucket de state (lecture/ecriture du lockfile).
+#     Lecture seule + lecture du state (le plan tourne avec -lock=false).
 # ---------------------------------------------------------------------------
 data "aws_iam_policy_document" "trust_plan" {
   statement {
@@ -68,7 +84,7 @@ data "aws_iam_policy_document" "trust_plan" {
 
     principals {
       type        = "Federated"
-      identifiers = [aws_iam_openid_connect_provider.github.arn]
+      identifiers = [local.oidc_arn]
     }
 
     condition {
@@ -86,10 +102,13 @@ data "aws_iam_policy_document" "trust_plan" {
 }
 
 resource "aws_iam_role" "plan" {
-  name                 = "github-actions-plan"
+  name                 = local.role_plan_name
   description          = "GitHub Actions : terraform plan depuis les PR (lecture seule)"
   assume_role_policy   = data.aws_iam_policy_document.trust_plan.json
   max_session_duration = 3600
+
+  # La trust policy reference le fournisseur OIDC : il doit exister avant.
+  depends_on = [aws_iam_openid_connect_provider.github]
 }
 
 resource "aws_iam_role_policy_attachment" "plan_readonly" {
@@ -131,7 +150,7 @@ data "aws_iam_policy_document" "trust_deploy" {
 
     principals {
       type        = "Federated"
-      identifiers = [aws_iam_openid_connect_provider.github.arn]
+      identifiers = [local.oidc_arn]
     }
 
     condition {
@@ -143,16 +162,18 @@ data "aws_iam_policy_document" "trust_deploy" {
     condition {
       test     = "StringEquals"
       variable = "${local.oidc_host}:sub"
-      values   = ["${local.subject_base}:environment:${var.github_environment}"]
+      values   = ["${local.subject_base}:environment:${local.environment}"]
     }
   }
 }
 
 resource "aws_iam_role" "deploy" {
-  name                 = "github-actions-deploy"
-  description          = "GitHub Actions : terraform apply depuis l'environnement ${var.github_environment}"
+  name                 = local.role_deploy_name
+  description          = "GitHub Actions : terraform apply depuis l'environnement ${local.environment}"
   assume_role_policy   = data.aws_iam_policy_document.trust_deploy.json
   max_session_duration = 3600
+
+  depends_on = [aws_iam_openid_connect_provider.github]
 }
 
 resource "aws_iam_role_policy" "deploy_state" {
@@ -325,7 +346,7 @@ resource "aws_iam_role_policy" "deploy_infra" {
         Sid      = "Route53ChangeRecords"
         Effect   = "Allow"
         Action   = ["route53:ChangeResourceRecordSets"]
-        Resource = local.route53_resource
+        Resource = local.zone_arn
       },
     ]
   })

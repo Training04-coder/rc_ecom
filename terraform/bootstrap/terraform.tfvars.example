@@ -1,9 +1,10 @@
-aws_region  = "eu-west-1"
-github_org  = "lims931"
-github_repo = "secagent-lab-beautify"
+# Copier en terraform.tfvars et remplacer par les valeurs du participant.
+aws_region   = "eu-west-1"
+github_owner = "participant-42"      # compte ou organisation GitHub
+github_repo  = "bricoshop"           # nom du depot (sans le owner)
+domain_name  = "participant42.click" # zone Route 53 publique du compte AWS
+subdomain    = "app"                 # site : https://app.participant42.click
 
-# Bucket de state : doit etre GLOBALEMENT unique. Laisser vide => "<org>-<repo>-tfstate".
-# state_bucket_name = "lims931-secagent-lab-beautify-tfstate"
-
-# (Optionnel) restreint les ecritures DNS du role deploy a une seule zone.
-# route53_zone_id = "Z0123456789ABCDEFGHIJ"
+# Mettre false si le compte AWS a deja un fournisseur OIDC GitHub
+# (erreur "EntityAlreadyExists ... token.actions.githubusercontent.com").
+# create_oidc_provider = false

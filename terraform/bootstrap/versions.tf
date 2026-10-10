@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.5"
+  required_version = ">= 1.10"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -7,10 +7,9 @@ terraform {
     }
   }
 
-  # State LOCAL volontaire : le bootstrap cree le bucket de state distant,
-  # il ne peut donc pas y stocker son propre state (l'oeuf et la poule).
-  # On applique ce dossier une seule fois en local, et on commite le
-  # terraform.tfstate du bootstrap n'est PAS necessaire (ressources rarement modifiees).
+  # State LOCAL volontaire : le bootstrap cree le bucket du state distant, il ne
+  # peut donc pas y stocker son propre state. Le terraform.tfstate genere ici est
+  # ignore par git (.gitignore) : le garder sur la machine du participant.
 }
 
 provider "aws" {

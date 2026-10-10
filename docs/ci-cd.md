@@ -1,151 +1,191 @@
-# CI/CD — build & déploiement via GitHub Actions (OIDC, sans clé IAM)
+# Déployer BricoShop avec GitHub Actions (fiche participant)
 
-Ce dépôt se déploie sur AWS par **GitHub Actions**, avec une authentification
-**OIDC GitHub → AWS** : **aucune clé d'accès IAM** n'est stockée dans GitHub.
-GitHub présente un jeton OIDC signé, AWS vérifie l'émetteur + les conditions
-(`aud` et `sub`) et délivre des identifiants STS temporaires.
+Chaque participant déploie **sa propre copie** du site, dans **son compte AWS**, depuis
+**son dépôt GitHub**, sur **son nom de domaine**. Aucune clé d'accès AWS n'est stockée
+dans GitHub : le pipeline s'authentifie par **OIDC** (identifiants temporaires).
 
 ```
-PR      ──> build + compile-check + terraform plan   (rôle lecture seule)
-push master ──> build + plan + apply                 (rôle deploy, env "production")
+pull request      ──> build + terraform plan   (rôle github-actions-plan, lecture seule)
+push branche par défaut ──> build + plan + apply (rôle github-actions-deploy, après approbation)
 ```
 
-Deux rôles distincts, chacun assumable depuis un seul contexte :
-
-| Rôle                   | Assumable depuis                                   | Droits                              |
-|------------------------|----------------------------------------------------|-------------------------------------|
-| `github-actions-plan`  | les **pull requests** du dépôt (`sub = …:pull_request`) | lecture seule + lecture du state    |
-| `github-actions-deploy`| l'**environnement `production`** (`sub = …:environment:production`) | moindre privilège sur les ressources du projet |
-
-Les deux exigent `aud = sts.amazonaws.com`. **Aucun wildcard `repo:*`.**
+**Tu ne renseignes tes valeurs qu'à deux endroits** : un fichier `terraform.tfvars` sur ta
+machine, et 4 variables dans GitHub. Le reste du dépôt ne change pas.
 
 ---
 
-## Étape 1 — Bootstrap (une seule fois, en local)
+## Prérequis
 
-Le dossier [`terraform/bootstrap/`](../terraform/bootstrap/) crée le socle de confiance :
-fournisseur OIDC, bucket S3 du state (versionné + chiffré + privé) et les deux rôles IAM.
-Il a **son propre state local** (il ne peut pas se stocker dans le bucket qu'il crée).
+| Quoi | Vérification |
+|---|---|
+| Un compte AWS avec des droits admin, configuré en local | `aws sts get-caller-identity` répond |
+| Terraform **≥ 1.10** | `terraform version` |
+| Une **zone hébergée publique Route 53** dans **ce même compte** AWS | Route 53 → Hosted zones |
+| Un compte GitHub | — |
+
+Pas encore de domaine ? Route 53 → *Registered domains* → *Register* (un `.click` coûte
+quelques $/an, la zone est créée automatiquement). Domaine chez un autre registrar ? Créer la
+hosted zone dans Route 53 et recopier ses 4 serveurs NS chez le registrar.
+
+---
+
+## 1. Copier le dépôt sur ton compte GitHub
+
+*Fork* (ou *Use this template*) du dépôt du formateur vers ton compte. Note le **nom de ton
+compte** et le **nom du dépôt** : `https://github.com/<github_owner>/<github_repo>`.
+
+```bash
+git clone https://github.com/<github_owner>/<github_repo>.git
+cd <github_repo>
+```
+
+## 2. Renseigner ta configuration
 
 ```bash
 cd terraform/bootstrap
-cp terraform.tfvars.example terraform.tfvars   # ajuste github_org / github_repo / state_bucket_name
-terraform init
-terraform apply
+cp terraform.tfvars.example terraform.tfvars
 ```
 
-> ⚠️ `terraform apply` ici crée des ressources AWS (OIDC + IAM + bucket de state).
-> C'est la **seule** commande `apply` à lancer à la main. Elle est rejouable sans danger.
+Édite `terraform.tfvars` :
 
-Récupère les outputs (à reporter dans GitHub à l'étape 3) :
+```hcl
+aws_region   = "eu-west-1"
+github_owner = "participant-42"       # ton compte GitHub
+github_repo  = "bricoshop"            # ton dépôt
+domain_name  = "participant42.click"  # ta zone Route 53
+subdomain    = "app"                  # => https://app.participant42.click
+```
+
+## 3. Lancer le bootstrap (une seule fois)
 
 ```bash
-terraform output
-# oidc_provider_arn = "arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com"
-# role_plan_arn     = "arn:aws:iam::<account>:role/github-actions-plan"
-# role_deploy_arn   = "arn:aws:iam::<account>:role/github-actions-deploy"
-# state_bucket      = "lims931-secagent-lab-beautify-tfstate"
+terraform init
+terraform apply      # répondre "yes"
 ```
 
-Variables utiles du bootstrap (voir [`variables.tf`](../terraform/bootstrap/variables.tf)) :
+Il crée dans **ton** compte AWS : la confiance OIDC avec GitHub, le bucket du state Terraform
+(`bricoshop-tfstate-<account_id>`) et les deux rôles IAM du pipeline. Il vérifie aussi que ta
+zone Route 53 existe.
 
-- `github_org` / `github_repo` — défaut `lims931` / `secagent-lab-beautify`.
-- `state_bucket_name` — nom **globalement unique** du bucket de state ; vide ⇒ `<org>-<repo>-tfstate`.
-- `route53_zone_id` — *(optionnel)* restreint les écritures DNS du rôle deploy à cette seule zone.
+À la fin, il affiche ce qu'il faut recopier dans GitHub :
+
+```
+github_environment = "production"
+github_variables = {
+  "AWS_ACCOUNT_ID" = "123456789012"
+  "AWS_REGION"     = "eu-west-1"
+  "DOMAIN_NAME"    = "participant42.click"
+  "SUBDOMAIN"      = "app"
+}
+site_url = "https://app.participant42.click"
+```
+
+(Pour le réafficher plus tard : `terraform output`.)
+
+## 4. Configurer GitHub
+
+Dans ton dépôt GitHub :
+
+**a) Variables** — *Settings → Secrets and variables → Actions → onglet **Variables** →
+New repository variable*. Crée les 4 variables de `github_variables`, avec **exactement** ces
+noms et valeurs. Ce sont des *Variables*, pas des *Secrets* : rien de sensible.
+
+**b) Environnement** — *Settings → Environments → New environment* → nom **`production`**
+(exactement). Coche **Required reviewers** et ajoute-toi : chaque déploiement attendra ton
+approbation.
+
+**c) Actions** — sur un fork, ouvre l'onglet **Actions** et clique *I understand… enable
+workflows* (GitHub désactive les workflows des forks par défaut).
+
+## 5. Déployer
+
+Pousse un commit sur la branche par défaut (ou *Actions → build-and-deploy → Run workflow*) :
+
+```bash
+git commit --allow-empty -m "Premier déploiement"
+git push
+```
+
+Dans l'onglet **Actions**, le job `deploy` attend ton approbation (*Review deployments →
+Approve*), puis lance `terraform apply`. Le résumé du run affiche l'URL du site. Le HTTPS est
+disponible **1 à 3 min** après l'apply, le temps d'obtenir le certificat Let's Encrypt.
+
+```bash
+curl https://app.participant42.click/health
+```
+
+Ensuite : toute **pull request** affiche le `terraform plan` en commentaire ; tout **merge** sur
+la branche par défaut redéploie.
 
 ---
 
-## Étape 2 — Migrer le state du Terraform principal vers S3 (une seule fois, en local)
+## Dépannage
 
-Le Terraform principal utilisait un **state local**. [`terraform/backend.tf`](../terraform/backend.tf)
-ajoute un backend S3 (configuration **partielle** : le nom du bucket est fourni au `init`).
-Migre ton state existant **une fois**, depuis ta machine :
+| Symptôme | Cause / correction |
+|---|---|
+| Job build : `Variable GitHub … manquante` | Étape 4a incomplète ou nom de variable mal orthographié. |
+| `bootstrap apply` : `EntityAlreadyExists … token.actions.githubusercontent.com` | Le compte a déjà un fournisseur OIDC GitHub. Ajouter `create_oidc_provider = false` dans `terraform.tfvars` et relancer. |
+| `bootstrap apply` : `no matching Route 53 Hosted Zone found` | `domain_name` ne correspond à aucune zone publique de ce compte AWS. |
+| `bootstrap apply` : `BucketAlreadyExists` | Rarissime (nom basé sur l'ID du compte). Vérifier qu'on est sur le bon compte AWS. |
+| `Not authorized to perform sts:AssumeRoleWithWebIdentity` | `github_owner` / `github_repo` du tfvars ≠ dépôt réel (attention à la casse), ou environnement GitHub pas nommé exactement `production`. Corriger puis relancer `terraform apply` dans le bootstrap. |
+| Le job `deploy` ne se lance pas après un push | Le push n'est pas sur la branche par défaut du dépôt, ou le workflow est désactivé (fork : étape 4c). |
+| Le site ne répond pas en HTTPS | Attendre 3 min. Puis vérifier que les NS du domaine pointent bien vers la zone Route 53. |
+
+---
+
+## Lancer Terraform depuis sa machine (facultatif)
+
+Le pipeline suffit. Pour travailler en local sur le même state que la CI :
 
 ```bash
 cd terraform
-terraform init -migrate-state -backend-config="bucket=<state_bucket du bootstrap>"
-# Terraform propose de copier le state local vers S3 -> répondre "yes"
+cp terraform.tfvars.example terraform.tfvars   # mêmes domain_name / subdomain / aws_region
+terraform init -backend-config="bucket=bricoshop-tfstate-<account_id>" -backend-config="region=<region>"
 ```
 
-Ensuite, en local comme en CI, le `init` se fait toujours avec le même `-backend-config`.
-Si tu n'as encore **jamais** appliqué le Terraform principal, saute la migration :
-un simple `terraform init -backend-config="bucket=…"` suffit.
+La commande `init` exacte est donnée par `terraform output local_init_command` dans
+`terraform/bootstrap`. Le state est verrouillé (lockfile S3) : pas de risque de conflit avec un
+run CI en cours.
+
+> **Formateur — infra déjà déployée avec un state local ?** Ajoute `-migrate-state` à la
+> commande `init` ci-dessus, une seule fois, pour envoyer ton state existant dans le bucket.
 
 ---
 
-## Étape 3 — Variables GitHub
+## Nettoyage en fin de formation
 
-GitHub → **Settings → Secrets and variables → Actions → onglet _Variables_** (ce sont
-des **Variables**, pas des Secrets : ce ne sont que des ARN et un domaine, rien de sensible).
+Dans cet ordre (le state du site est dans le bucket que supprime le bootstrap) :
 
-| Variable             | Valeur                                             |
-|----------------------|----------------------------------------------------|
-| `AWS_ROLE_ARN_PLAN`  | output `role_plan_arn` du bootstrap                |
-| `AWS_ROLE_ARN_DEPLOY`| output `role_deploy_arn` du bootstrap              |
-| `TF_STATE_BUCKET`    | output `state_bucket` du bootstrap                 |
-| `TF_DOMAIN_NAME`     | ta zone Route 53 publique (ex. `mondomaine.click`) |
-| `TF_SUBDOMAIN`       | *(optionnel)* sous-domaine, défaut `app`           |
+```bash
+cd terraform            && terraform destroy   # le site (après l'init ci-dessus)
+cd terraform/bootstrap  && terraform destroy   # OIDC, rôles, bucket de state
+```
 
-> Le workflow ne force **jamais** `demo_vuln` : il reste à `false` (défaut). Ne jamais
-> activer la XSS de démo via la CI.
+Puis, si un ancien déploiement utilisait des **clés d'accès IAM** (`aws configure` d'un user
+CI, secrets `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` dans GitHub) : les supprimer
+(*GitHub → Settings → Secrets* et *IAM → Users → Security credentials*). L'OIDC les rend
+inutiles.
 
 ---
 
-## Étape 4 — Environnement `production` avec required reviewers
+## Pour le formateur : ce qui est figé dans le code
 
-GitHub → **Settings → Environments → New environment → `production`**, puis :
+Ces noms sont des **conventions partagées** entre [`terraform/bootstrap/main.tf`](../terraform/bootstrap/main.tf)
+et [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml). Ils sont identiques dans
+chaque compte, c'est ce qui permet de n'avoir que 4 variables :
 
-- **Required reviewers** : ajoute-toi (et/ou l'équipe). Chaque `apply` sera **mis en pause
-  en attente d'approbation**.
-- *(Optionnel)* **Deployment branches** : limiter à `master`.
+| Convention | Valeur |
+|---|---|
+| Rôles IAM | `github-actions-plan`, `github-actions-deploy` |
+| Bucket de state | `bricoshop-tfstate-<account_id>` |
+| Clé du state | `bricoshop/terraform.tfstate` ([`terraform/backend.tf`](../terraform/backend.tf)) |
+| Environnement GitHub | `production` |
+| Version Terraform en CI | `TF_VERSION` dans le workflow |
 
-Ce nom `production` est **doublement** structurant :
-1. il déclenche l'approbation manuelle avant l'`apply` ;
-2. il conditionne la confiance OIDC du rôle deploy (`sub = …:environment:production`).
-   Si tu renommes l'environnement, mets à jour `github_environment` dans le bootstrap et réapplique-le.
-
----
-
-## Étape 5 — Supprimer les anciennes clés d'accès IAM
-
-Si un déploiement manuel utilisait auparavant une clé d'accès IAM (`aws configure`,
-secret GitHub `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, etc.), **supprime-les** :
-l'OIDC les rend inutiles et une clé longue durée est le principal risque à éliminer.
-
-- GitHub : **Settings → Secrets** → supprimer tout secret `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`.
-- AWS : **IAM → Users → <ton user CI> → Security credentials** → désactiver puis supprimer les access keys devenues inutiles.
-
----
-
-## Comportement du pipeline
-
-Workflow : [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml).
-`permissions: id-token: write, contents: read, pull-requests: write`.
-
-- **Sur une pull request** : job `build` (compile-check `javac` + artefact), puis job `plan`
-  (rôle **plan**, `fmt -check`, `validate`, `plan -lock=false`) ; le résumé du plan est posté
-  **en commentaire de la PR** (mis à jour à chaque push).
-- **Sur un push vers `master`** : job `build`, puis job `deploy` (environnement `production`,
-  donc **approbation requise**) qui refait `plan` puis **`apply`** avec le rôle **deploy**.
-
-### Détails utiles
-
-- **Build** : l'appli est un *single-file* Java lancé en source-launcher (`java App.java`),
-  **sans Maven/Gradle ni tests**. Le job build fait donc un **compile-check** (`javac`) ;
-  l'artefact `app-source` est fourni par conformité mais **n'est pas consommé** par le déploiement
-  (le code part vers S3 via Terraform, qui lit directement les fichiers du dépôt).
-- **Actions épinglées** : toutes les actions sont figées à un **SHA de commit** (le tag est en
-  commentaire), pour éviter qu'un tag mutable change le code exécuté.
-- **Branche `master` vs `main`** : la branche par défaut du dépôt est **`master`**. Le workflow
-  cible `master` (push + `if` du job deploy). Si tu renommes en `main`, modifie ces deux endroits.
-
----
-
-## Rappel moindre privilège (rôle deploy)
-
-La politique du rôle deploy ([`terraform/bootstrap/main.tf`](../terraform/bootstrap/main.tf)) est
-construite à partir des ressources réellement gérées : EC2/SG/EIP, IAM (uniquement le rôle et
-l'instance-profile du projet, `PassRole` restreint à EC2), S3 (bucket app + state), CloudWatch
-Logs (le seul log group `/bricoshop/app`), Route 53 (lecture + `ChangeResourceRecordSets`), SSM
-GetParameter (AMI). **Pas d'`AdministratorAccess`.** Si tu ajoutes une ressource au Terraform
-principal, étends cette politique en conséquence puis réapplique le bootstrap.
+Sécurité : le rôle plan n'est assumable que depuis une **pull request** du dépôt du participant,
+le rôle deploy que depuis son environnement **`production`** (conditions `sub` exactes + `aud =
+sts.amazonaws.com`, jamais `repo:*`). Le rôle deploy n'a pas `AdministratorAccess` : sa
+politique ne couvre que les ressources du projet (EC2/SG/EIP, rôle et instance-profile
+`secagent-java-ec2-*`, buckets du projet, log group `/bricoshop/app`, **la seule zone Route 53
+du participant**). Si tu ajoutes une ressource au Terraform principal, étends cette politique
+puis fais réappliquer le bootstrap.

@@ -1,14 +1,17 @@
 name: build-and-deploy
 
-# PR  -> build + compile-check + terraform plan (role lecture seule, via OIDC)
-# push sur la branche par defaut -> build + plan + apply (role deploy, env "production")
+# PR                         -> build + terraform plan  (role lecture seule, OIDC)
+# push sur la branche par defaut (main OU master) -> build + plan + apply
+#                               (role deploy, environnement "production")
 #
-# NB : la branche par defaut du depot est "master". Si tu renommes en "main",
-#      remplace "master" aux deux endroits ci-dessous (push.branches et le if du job deploy).
+# Aucune valeur propre a un participant ici : tout vient des variables GitHub
+# (Settings > Secrets and variables > Actions > Variables), affichees par le
+# bootstrap (terraform output github_variables) :
+#   AWS_ACCOUNT_ID, AWS_REGION, DOMAIN_NAME, SUBDOMAIN (optionnel, defaut "app")
 on:
   pull_request:
   push:
-    branches: [master]
+    branches: [main, master]
   workflow_dispatch:
 
 # Authentification AWS par OIDC : aucun secret d'acces IAM stocke dans GitHub.
@@ -17,17 +20,22 @@ permissions:
   contents: read # checkout du code
   pull-requests: write # poster le resume du plan en commentaire de PR
 
-# Jamais deux `apply` en parallele sur la meme ref.
+# Jamais deux executions Terraform en parallele sur la meme ref.
 concurrency:
   group: terraform-${{ github.ref }}
   cancel-in-progress: false
 
 env:
-  AWS_REGION: eu-west-1
-  # Variables NON secretes fournies cote GitHub (Settings > Variables).
-  TF_VAR_domain_name: ${{ vars.TF_DOMAIN_NAME }}
-  TF_VAR_subdomain: ${{ vars.TF_SUBDOMAIN }}
-  TF_VAR_aws_region: eu-west-1
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  # Conventions fixees par terraform/bootstrap (memes noms dans chaque compte).
+  ROLE_PLAN: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-plan
+  ROLE_DEPLOY: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+  TF_STATE_BUCKET: bricoshop-tfstate-${{ vars.AWS_ACCOUNT_ID }}
+  TF_VERSION: 1.11.4
+  # Variables du Terraform principal.
+  TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+  TF_VAR_domain_name: ${{ vars.DOMAIN_NAME }}
+  TF_VAR_subdomain: ${{ vars.SUBDOMAIN || 'app' }}
 
 jobs:
   # ------------------------------------------------------------------ build
@@ -35,6 +43,21 @@ jobs:
     name: Build (compile-check)
     runs-on: ubuntu-latest
     steps:
+      - name: Verifier la configuration GitHub
+        env:
+          ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          REGION: ${{ vars.AWS_REGION }}
+          DOMAIN: ${{ vars.DOMAIN_NAME }}
+        run: |
+          ok=true
+          [ -n "$ACCOUNT_ID" ] || { echo "::error::Variable GitHub AWS_ACCOUNT_ID manquante (voir docs/ci-cd.md)"; ok=false; }
+          [ -n "$REGION" ]     || { echo "::error::Variable GitHub AWS_REGION manquante (voir docs/ci-cd.md)"; ok=false; }
+          [ -n "$DOMAIN" ]     || { echo "::error::Variable GitHub DOMAIN_NAME manquante (voir docs/ci-cd.md)"; ok=false; }
+          if [ -n "$ACCOUNT_ID" ] && ! [[ "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+            echo "::error::AWS_ACCOUNT_ID doit faire 12 chiffres (recu : '$ACCOUNT_ID')"; ok=false
+          fi
+          $ok
+
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up JDK 21
@@ -42,16 +65,14 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
-          # Pas de `cache:` : l'appli est zero-dependance (ni Maven ni Gradle),
-          # il n'y a donc aucun lockfile de dependances a mettre en cache.
-          # La distribution du JDK, elle, est deja mise en cache par l'action.
+          # Pas de `cache:` : appli zero-dependance (ni Maven ni Gradle), donc
+          # aucun lockfile de dependances a mettre en cache.
 
       - name: Compile-check (javac App.java)
         run: |
           mkdir -p build/classes
           javac -d build/classes app/App.java
-          echo "Compilation OK."
-          # Pas de tests unitaires dans ce projet (single-file, zero build).
+          echo "Compilation OK (pas de tests unitaires : appli single-file)."
 
       - name: Upload artefact source
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -75,26 +96,29 @@ jobs:
       - name: Configure AWS credentials (OIDC, role plan)
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN_PLAN }}
+          role-to-assume: ${{ env.ROLE_PLAN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
-          terraform_version: 1.11.4
+          terraform_version: ${{ env.TF_VERSION }}
 
       - name: Terraform fmt
         run: terraform fmt -check -recursive
 
       - name: Terraform init
-        run: terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+        run: >-
+          terraform init -input=false
+          -backend-config="bucket=$TF_STATE_BUCKET"
+          -backend-config="region=$AWS_REGION"
 
       - name: Terraform validate
         run: terraform validate -no-color
 
       - name: Terraform plan
         id: plan
-        # -lock=false : le role plan est en lecture seule, il ne peut pas ecrire le lockfile.
+        # -lock=false : le role plan est en lecture seule, il ne peut pas poser de verrou.
         run: terraform plan -no-color -input=false -lock=false -out=tfplan
         continue-on-error: true
 
@@ -136,10 +160,10 @@ jobs:
         if: steps.plan.outcome == 'failure'
         run: exit 1
 
-  # ------------------------------------------ deploy (push sur master only)
+  # ------------------------------- deploy (branche par defaut uniquement)
   deploy:
     name: Terraform apply (production)
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
     needs: build
     runs-on: ubuntu-latest
     # L'environnement "production" (required reviewers) protege l'apply ET
@@ -154,19 +178,22 @@ jobs:
       - name: Configure AWS credentials (OIDC, role deploy)
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN_DEPLOY }}
+          role-to-assume: ${{ env.ROLE_DEPLOY }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
-          terraform_version: 1.11.4
+          terraform_version: ${{ env.TF_VERSION }}
 
       - name: Terraform fmt
         run: terraform fmt -check -recursive
 
       - name: Terraform init
-        run: terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+        run: >-
+          terraform init -input=false
+          -backend-config="bucket=$TF_STATE_BUCKET"
+          -backend-config="region=$AWS_REGION"
 
       - name: Terraform validate
         run: terraform validate -no-color
@@ -176,3 +203,8 @@ jobs:
 
       - name: Terraform apply
         run: terraform apply -no-color -input=false tfplan
+
+      - name: URL du site
+        run: |
+          echo "### Site deploye : https://${TF_VAR_subdomain}.${TF_VAR_domain_name}" >> "$GITHUB_STEP_SUMMARY"
+          echo "HTTPS disponible 1 a 3 min apres l'apply (certificat Let's Encrypt)." >> "$GITHUB_STEP_SUMMARY"
