@@ -3,6 +3,7 @@ name: build-and-deploy
 # PR                         -> build + terraform plan  (role lecture seule, OIDC)
 # push sur la branche par defaut (main OU master) -> build + destroy + plan + apply
 #                               (role deploy, environnement "production")
+# Run workflow, action = destroy -> build + destroy seul (pas de plan/apply)
 #
 # Seule variable GitHub (Settings > Secrets and variables > Actions > Variables),
 # affichee par le bootstrap (terraform output github_variables) : AWS_ACCOUNT_ID.
@@ -14,6 +15,13 @@ on:
     branches: [main, master]
   workflow_dispatch:
     inputs:
+      action:
+        description: "deploy = (destroy) + plan + apply ; destroy = supprime la stack principale et s'arrete"
+        type: choice
+        options:
+          - deploy
+          - destroy
+        default: deploy
       destroy_before_apply:
         description: "Detruire la stack principale (terraform/) avant le redeploiement"
         type: boolean
@@ -164,7 +172,7 @@ jobs:
 
   # ------------------------------- deploy (branche par defaut uniquement)
   deploy:
-    name: Terraform destroy + apply (production)
+    name: ${{ inputs.action == 'destroy' && 'Terraform destroy seul (production)' || 'Terraform destroy + apply (production)' }}
     if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
     needs: build
     runs-on: ubuntu-latest
@@ -203,16 +211,25 @@ jobs:
         # working-directory = terraform/ : ne touche JAMAIS au bootstrap (terraform/bootstrap, state local).
         # 1er run / state vide : "No objects need to be destroyed", code retour 0.
         # Desactivable via Run workflow > destroy_before_apply = false.
-        if: github.event_name != 'workflow_dispatch' || inputs.destroy_before_apply
+        # Toujours execute avec Run workflow > action = destroy.
+        if: github.event_name != 'workflow_dispatch' || inputs.action == 'destroy' || inputs.destroy_before_apply
         run: terraform destroy -auto-approve -no-color -input=false
 
+      # Les etapes suivantes sont sautees en mode destroy seul (inputs.action vaut '' sur un push).
       - name: Terraform plan
+        if: inputs.action != 'destroy'
         run: terraform plan -no-color -input=false -out=tfplan
 
       - name: Terraform apply
+        if: inputs.action != 'destroy'
         run: terraform apply -no-color -input=false tfplan
 
+      - name: Resume destroy
+        if: inputs.action == 'destroy'
+        run: echo "### Stack principale detruite (bootstrap conserve). Relancer avec action = deploy pour redeployer." >> "$GITHUB_STEP_SUMMARY"
+
       - name: URL du site
+        if: inputs.action != 'destroy'
         run: |
           echo "### Site deploye : https://${TF_VAR_subdomain}.${TF_VAR_domain_name}" >> "$GITHUB_STEP_SUMMARY"
           echo "HTTPS disponible 1 a 3 min apres l'apply (certificat Let's Encrypt)." >> "$GITHUB_STEP_SUMMARY"
