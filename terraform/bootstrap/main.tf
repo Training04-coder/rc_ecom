@@ -327,7 +327,6 @@ resource "aws_iam_role_policy" "deploy_infra" {
         Action = [
           "logs:CreateLogGroup",
           "logs:DeleteLogGroup",
-          "logs:DescribeLogGroups",
           "logs:PutRetentionPolicy",
           "logs:DeleteRetentionPolicy",
           "logs:TagResource",
@@ -341,6 +340,14 @@ resource "aws_iam_role_policy" "deploy_infra" {
           local.log_group_arn,
           "${local.log_group_arn}:*",
         ]
+      },
+      {
+        # DescribeLogGroups est une action de liste : IAM l'evalue sur
+        # "log-group::log-stream:", pas sur l'ARN du groupe. Lecture seule.
+        Sid      = "CloudWatchLogsDescribe"
+        Effect   = "Allow"
+        Action   = ["logs:DescribeLogGroups"]
+        Resource = "*"
       },
       {
         Sid    = "Route53ReadZones"
