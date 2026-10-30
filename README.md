@@ -4,7 +4,7 @@ Objectif : avoir en ~15 min un site web **Java** public, en **HTTPS**, sur un **
 deployé par **Terraform**, pour lancer un pentest **AWS Security Agent**.
 
 ```
-Internet ──> app.mondomaine.tld (Route 53, A record)
+Internet ──> rch.alpha-awslab26.click (Route 53, A record)
           ──> Elastic IP ──> EC2 t3.micro (Amazon Linux 2023)
                                ├─ Caddy :80/:443  (certificat Let's Encrypt automatique)
                                └─ java App.java  127.0.0.1:8080 (JDK 21, zéro build, zéro dépendance)
@@ -20,11 +20,12 @@ Pas de Docker, pas de Maven, pas d'ECR, pas d'ALB, pas d'ACM : le moins de pièc
 
 ## Déployer
 Le déploiement passe par GitHub Actions (authentification OIDC, aucune clé IAM) :
-suivre la fiche **[docs/ci-cd.md](docs/ci-cd.md)** (bootstrap une fois, 4 variables GitHub, push).
+suivre la fiche **[docs/ci-cd.md](docs/ci-cd.md)** (bootstrap une fois, 1 variable GitHub `AWS_ACCOUNT_ID`, push).
+Région forcée `eu-west-1` ; initiales `rch` en préfixe de chaque nom de ressource.
 
 Attendre 2–3 min (install Java + Caddy + certificat), puis :
 ```bash
-curl https://app.mondomaine.tld/health
+curl https://rch.alpha-awslab26.click/health
 ```
 Debug sans SSH : `terraform output ssm_connect`, puis `sudo journalctl -u javaapp -u caddy -f`.
 
@@ -41,13 +42,15 @@ Ne laisse jamais ce mode actif hors du lab.
 
 ## Lancer AWS Security Agent
 1. Console AWS Security Agent > *Set up* > créer un **Agent Space** (accès IAM-only pour aller vite).
-2. Onglet *Penetration test* > *Set up penetration test* > domaine `app.mondomaine.tld`
+2. Onglet *Penetration test* > *Set up penetration test* > domaine `rch.alpha-awslab26.click`
    > **One-click verification** (Route 53 du même compte).
 3. (Optionnel) Pousser ce dossier sur GitHub et connecter le repo (contexte code + remédiation par PR).
-4. Web app > *Create a penetration test* > Target URL `https://app.mondomaine.tld`
+4. Web app > *Create a penetration test* > Target URL `https://rch.alpha-awslab26.click`
    > **fixer Max task hours au minimum (20)** pour plafonner le coût.
 
 ## Nettoyer
+Le pipeline lance déjà `terraform destroy` sur la stack principale avant chaque apply (le bootstrap
+n'est jamais touché). Pour le nettoyage final, le destroy manuel reste valable :
 ```bash
 terraform destroy
 ```

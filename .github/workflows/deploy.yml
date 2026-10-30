@@ -1,18 +1,23 @@
 name: build-and-deploy
 
 # PR                         -> build + terraform plan  (role lecture seule, OIDC)
-# push sur la branche par defaut (main OU master) -> build + plan + apply
+# push sur la branche par defaut (main OU master) -> build + destroy + plan + apply
 #                               (role deploy, environnement "production")
 #
-# Aucune valeur propre a un participant ici : tout vient des variables GitHub
-# (Settings > Secrets and variables > Actions > Variables), affichees par le
-# bootstrap (terraform output github_variables) :
-#   AWS_ACCOUNT_ID, AWS_REGION, DOMAIN_NAME, SUBDOMAIN (optionnel, defaut "app")
+# Seule variable GitHub (Settings > Secrets and variables > Actions > Variables),
+# affichee par le bootstrap (terraform output github_variables) : AWS_ACCOUNT_ID.
+# Valeurs forcees ici : region eu-west-1, initiales rch, domaine
+# alpha-awslab26.click, sous-domaine rch (=> https://rch.alpha-awslab26.click).
 on:
   pull_request:
   push:
     branches: [main, master]
   workflow_dispatch:
+    inputs:
+      destroy_before_apply:
+        description: "Detruire la stack principale (terraform/) avant le redeploiement"
+        type: boolean
+        default: true
 
 # Authentification AWS par OIDC : aucun secret d'acces IAM stocke dans GitHub.
 permissions:
@@ -26,16 +31,18 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  AWS_REGION: ${{ vars.AWS_REGION }}
+  # Valeurs forcees (doivent rester alignees avec terraform/bootstrap et terraform/backend.tf).
+  AWS_REGION: eu-west-1
   # Conventions fixees par terraform/bootstrap (memes noms dans chaque compte).
-  ROLE_PLAN: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-plan
-  ROLE_DEPLOY: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
-  TF_STATE_BUCKET: bricoshop-tfstate-${{ vars.AWS_ACCOUNT_ID }}
+  ROLE_PLAN: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/rch-github-actions-plan
+  ROLE_DEPLOY: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/rch-github-actions-deploy
+  TF_STATE_BUCKET: rch-bricoshop-tfstate-${{ vars.AWS_ACCOUNT_ID }}
   TF_VERSION: 1.11.4
   # Variables du Terraform principal.
-  TF_VAR_aws_region: ${{ vars.AWS_REGION }}
-  TF_VAR_domain_name: ${{ vars.DOMAIN_NAME }}
-  TF_VAR_subdomain: ${{ vars.SUBDOMAIN || 'app' }}
+  TF_VAR_aws_region: eu-west-1
+  TF_VAR_initials: rch
+  TF_VAR_domain_name: alpha-awslab26.click
+  TF_VAR_subdomain: rch
 
 jobs:
   # ------------------------------------------------------------------ build
@@ -46,13 +53,9 @@ jobs:
       - name: Verifier la configuration GitHub
         env:
           ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
-          REGION: ${{ vars.AWS_REGION }}
-          DOMAIN: ${{ vars.DOMAIN_NAME }}
         run: |
           ok=true
           [ -n "$ACCOUNT_ID" ] || { echo "::error::Variable GitHub AWS_ACCOUNT_ID manquante (voir docs/ci-cd.md)"; ok=false; }
-          [ -n "$REGION" ]     || { echo "::error::Variable GitHub AWS_REGION manquante (voir docs/ci-cd.md)"; ok=false; }
-          [ -n "$DOMAIN" ]     || { echo "::error::Variable GitHub DOMAIN_NAME manquante (voir docs/ci-cd.md)"; ok=false; }
           if [ -n "$ACCOUNT_ID" ] && ! [[ "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
             echo "::error::AWS_ACCOUNT_ID doit faire 12 chiffres (recu : '$ACCOUNT_ID')"; ok=false
           fi
@@ -111,7 +114,6 @@ jobs:
         run: >-
           terraform init -input=false
           -backend-config="bucket=$TF_STATE_BUCKET"
-          -backend-config="region=$AWS_REGION"
 
       - name: Terraform validate
         run: terraform validate -no-color
@@ -162,7 +164,7 @@ jobs:
 
   # ------------------------------- deploy (branche par defaut uniquement)
   deploy:
-    name: Terraform apply (production)
+    name: Terraform destroy + apply (production)
     if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
     needs: build
     runs-on: ubuntu-latest
@@ -193,10 +195,16 @@ jobs:
         run: >-
           terraform init -input=false
           -backend-config="bucket=$TF_STATE_BUCKET"
-          -backend-config="region=$AWS_REGION"
 
       - name: Terraform validate
         run: terraform validate -no-color
+
+      - name: Terraform destroy (stack principale, avant apply)
+        # working-directory = terraform/ : ne touche JAMAIS au bootstrap (terraform/bootstrap, state local).
+        # 1er run / state vide : "No objects need to be destroyed", code retour 0.
+        # Desactivable via Run workflow > destroy_before_apply = false.
+        if: github.event_name != 'workflow_dispatch' || inputs.destroy_before_apply
+        run: terraform destroy -auto-approve -no-color -input=false
 
       - name: Terraform plan
         run: terraform plan -no-color -input=false -out=tfplan

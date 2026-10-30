@@ -1,10 +1,12 @@
 # Copier en terraform.tfvars et remplacer par les valeurs du participant.
-aws_region   = "eu-west-1"
-github_owner = "participant-42"      # compte ou organisation GitHub
-github_repo  = "bricoshop"           # nom du depot (sans le owner)
-domain_name  = "participant42.click" # zone Route 53 publique du compte AWS
-subdomain    = "app"                 # site : https://app.participant42.click
+aws_region   = "eu-west-1"            # forcee (toute autre valeur est refusee)
+initials     = "rch"                  # prefixe de chaque nom de ressource
+github_owner = "participant-42"       # compte ou organisation GitHub
+github_repo  = "bricoshop"            # nom du depot (sans le owner)
+domain_name  = "alpha-awslab26.click" # zone Route 53 publique du compte AWS
+subdomain    = "rch"                  # site : https://rch.alpha-awslab26.click
 
 # Mettre false si le compte AWS a deja un fournisseur OIDC GitHub
 # (erreur "EntityAlreadyExists ... token.actions.githubusercontent.com").
+# Dans un compte de formation partage, il existe en general deja : mettre false.
 # create_oidc_provider = false

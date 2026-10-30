@@ -5,12 +5,14 @@ Chaque participant déploie **sa propre copie** du site, dans **son compte AWS**
 dans GitHub : le pipeline s'authentifie par **OIDC** (identifiants temporaires).
 
 ```
-pull request      ──> build + terraform plan   (rôle github-actions-plan, lecture seule)
-push branche par défaut ──> build + plan + apply (rôle github-actions-deploy, après approbation)
+pull request      ──> build + terraform plan   (rôle rch-github-actions-plan, lecture seule)
+push branche par défaut ──> build + destroy + plan + apply (rôle rch-github-actions-deploy, après approbation)
 ```
 
 **Tu ne renseignes tes valeurs qu'à deux endroits** : un fichier `terraform.tfvars` sur ta
-machine, et 4 variables dans GitHub. Le reste du dépôt ne change pas.
+machine, et 1 variable (`AWS_ACCOUNT_ID`) dans GitHub. Région (`eu-west-1`), initiales (`rch`,
+préfixe de chaque nom de ressource), domaine (`alpha-awslab26.click`) et sous-domaine (`rch`)
+sont forcés dans le code.
 
 ---
 
@@ -49,11 +51,12 @@ cp terraform.tfvars.example terraform.tfvars
 Édite `terraform.tfvars` :
 
 ```hcl
-aws_region   = "eu-west-1"
-github_owner = "participant-42"       # ton compte GitHub
-github_repo  = "bricoshop"            # ton dépôt
-domain_name  = "participant42.click"  # ta zone Route 53
-subdomain    = "app"                  # => https://app.participant42.click
+aws_region   = "eu-west-1"             # forcée
+initials     = "rch"                   # préfixe de chaque nom de ressource
+github_owner = "participant-42"        # ton compte GitHub
+github_repo  = "bricoshop"             # ton dépôt
+domain_name  = "alpha-awslab26.click"  # zone Route 53 existante
+subdomain    = "rch"                   # => https://rch.alpha-awslab26.click
 ```
 
 ## 3. Lancer le bootstrap (une seule fois)
@@ -64,8 +67,9 @@ terraform apply      # répondre "yes"
 ```
 
 Il crée dans **ton** compte AWS : la confiance OIDC avec GitHub, le bucket du state Terraform
-(`bricoshop-tfstate-<account_id>`) et les deux rôles IAM du pipeline. Il vérifie aussi que ta
-zone Route 53 existe.
+(`rch-bricoshop-tfstate-<account_id>`) et les deux rôles IAM du pipeline
+(`rch-github-actions-plan`, `rch-github-actions-deploy`). Il vérifie aussi que ta zone Route 53
+existe.
 
 À la fin, il affiche ce qu'il faut recopier dans GitHub :
 
@@ -73,11 +77,8 @@ zone Route 53 existe.
 github_environment = "production"
 github_variables = {
   "AWS_ACCOUNT_ID" = "123456789012"
-  "AWS_REGION"     = "eu-west-1"
-  "DOMAIN_NAME"    = "participant42.click"
-  "SUBDOMAIN"      = "app"
 }
-site_url = "https://app.participant42.click"
+site_url = "https://rch.alpha-awslab26.click"
 ```
 
 (Pour le réafficher plus tard : `terraform output`.)
@@ -87,8 +88,8 @@ site_url = "https://app.participant42.click"
 Dans ton dépôt GitHub :
 
 **a) Variables** — *Settings → Secrets and variables → Actions → onglet **Variables** →
-New repository variable*. Crée les 4 variables de `github_variables`, avec **exactement** ces
-noms et valeurs. Ce sont des *Variables*, pas des *Secrets* : rien de sensible.
+New repository variable*. Crée la variable `AWS_ACCOUNT_ID` de `github_variables`, avec
+**exactement** ce nom et cette valeur. C'est une *Variable*, pas un *Secret* : rien de sensible.
 
 **b) Environnement** — *Settings → Environments → New environment* → nom **`production`**
 (exactement). Coche **Required reviewers** et ajoute-toi : chaque déploiement attendra ton
@@ -107,11 +108,18 @@ git push
 ```
 
 Dans l'onglet **Actions**, le job `deploy` attend ton approbation (*Review deployments →
-Approve*), puis lance `terraform apply`. Le résumé du run affiche l'URL du site. Le HTTPS est
-disponible **1 à 3 min** après l'apply, le temps d'obtenir le certificat Let's Encrypt.
+Approve*), puis lance `terraform destroy` sur la stack principale (`terraform/` uniquement, le
+bootstrap n'est jamais touché ; au premier run le state est vide et rien n'est détruit), puis
+`terraform plan` et `terraform apply`. Pour sauter le destroy : *Actions → build-and-deploy →
+Run workflow* avec `destroy_before_apply` = false. Le résumé du run affiche l'URL du site. Le
+HTTPS est disponible **1 à 3 min** après l'apply, le temps d'obtenir le certificat Let's Encrypt.
+
+> **Attention** : le destroy supprime aussi le bucket de l'appli, donc la sauvegarde des
+> certificats Caddy. Chaque déploiement redemande un certificat Let's Encrypt (limite de 5 par
+> semaine pour le même nom) et coupe le site quelques minutes.
 
 ```bash
-curl https://app.participant42.click/health
+curl https://rch.alpha-awslab26.click/health
 ```
 
 Ensuite : toute **pull request** affiche le `terraform plan` en commentaire ; tout **merge** sur
@@ -124,7 +132,8 @@ la branche par défaut redéploie.
 | Symptôme | Cause / correction |
 |---|---|
 | Job build : `Variable GitHub … manquante` | Étape 4a incomplète ou nom de variable mal orthographié. |
-| `bootstrap apply` : `EntityAlreadyExists … token.actions.githubusercontent.com` | Le compte a déjà un fournisseur OIDC GitHub. Ajouter `create_oidc_provider = false` dans `terraform.tfvars` et relancer. |
+| `bootstrap apply` : `EntityAlreadyExists … token.actions.githubusercontent.com` | Le compte a déjà un fournisseur OIDC GitHub (cas habituel d'un compte de formation partagé). Ajouter `create_oidc_provider = false` dans `terraform.tfvars` et relancer. |
+| `Invalid value for variable` sur `aws_region` | La région est forcée à `eu-west-1` : retirer toute autre valeur de `terraform.tfvars`. |
 | `bootstrap apply` : `no matching Route 53 Hosted Zone found` | `domain_name` ne correspond à aucune zone publique de ce compte AWS. |
 | `bootstrap apply` : `BucketAlreadyExists` | Rarissime (nom basé sur l'ID du compte). Vérifier qu'on est sur le bon compte AWS. |
 | `Not authorized to perform sts:AssumeRoleWithWebIdentity` | `github_owner` / `github_repo` du tfvars ≠ dépôt réel (attention à la casse), ou environnement GitHub pas nommé exactement `production`. Corriger puis relancer `terraform apply` dans le bootstrap. |
@@ -139,8 +148,8 @@ Le pipeline suffit. Pour travailler en local sur le même state que la CI :
 
 ```bash
 cd terraform
-cp terraform.tfvars.example terraform.tfvars   # mêmes domain_name / subdomain / aws_region
-terraform init -backend-config="bucket=bricoshop-tfstate-<account_id>" -backend-config="region=<region>"
+cp terraform.tfvars.example terraform.tfvars   # mêmes initials / domain_name / subdomain / aws_region
+terraform init -backend-config="bucket=rch-bricoshop-tfstate-<account_id>"
 ```
 
 La commande `init` exacte est donnée par `terraform output local_init_command` dans
@@ -172,13 +181,16 @@ inutiles.
 
 Ces noms sont des **conventions partagées** entre [`terraform/bootstrap/main.tf`](../terraform/bootstrap/main.tf)
 et [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml). Ils sont identiques dans
-chaque compte, c'est ce qui permet de n'avoir que 4 variables :
+chaque compte, c'est ce qui permet de n'avoir qu'une variable :
 
 | Convention | Valeur |
 |---|---|
-| Rôles IAM | `github-actions-plan`, `github-actions-deploy` |
-| Bucket de state | `bricoshop-tfstate-<account_id>` |
-| Clé du state | `bricoshop/terraform.tfstate` ([`terraform/backend.tf`](../terraform/backend.tf)) |
+| Initiales | `rch` (variable `initials` des deux stacks + valeurs en dur dans le workflow + clé du state) |
+| Région | `eu-west-1` (validation des variables `aws_region` + `backend.tf` + workflow) |
+| Domaine / sous-domaine | `alpha-awslab26.click` / `rch` (=> `rch.alpha-awslab26.click`) |
+| Rôles IAM | `rch-github-actions-plan`, `rch-github-actions-deploy` |
+| Bucket de state | `rch-bricoshop-tfstate-<account_id>` |
+| Clé du state | `rch-bricoshop/terraform.tfstate` ([`terraform/backend.tf`](../terraform/backend.tf)) |
 | Environnement GitHub | `production` |
 | Version Terraform en CI | `TF_VERSION` dans le workflow |
 
@@ -186,6 +198,6 @@ Sécurité : le rôle plan n'est assumable que depuis une **pull request** du d�
 le rôle deploy que depuis son environnement **`production`** (conditions `sub` exactes + `aud =
 sts.amazonaws.com`, jamais `repo:*`). Le rôle deploy n'a pas `AdministratorAccess` : sa
 politique ne couvre que les ressources du projet (EC2/SG/EIP, rôle et instance-profile
-`secagent-java-ec2-*`, buckets du projet, log group `/bricoshop/app`, **la seule zone Route 53
+`rch-secagent-java-ec2-*`, buckets `rch-secagent-java-app-*`, log group `/rch-bricoshop/app`, **la seule zone Route 53
 du participant**). Si tu ajoutes une ressource au Terraform principal, étends cette politique
 puis fais réappliquer le bootstrap.

@@ -5,7 +5,7 @@
 #       afin de démontrer la détection d'anomalies et Logs Insights dans CloudWatch.
 #
 # Usage   : ./simulate-traffic.sh <URL_BASE> <DUREE_MINUTES>
-# Exemple : ./simulate-traffic.sh https://app.secagent-lab.click 10
+# Exemple : ./simulate-traffic.sh https://rch.alpha-awslab26.click 10
 #
 # N'utilise que curl. À lancer UNIQUEMENT contre ton propre site de formation.
 

@@ -1,11 +1,8 @@
 # A recopier tel quel dans GitHub : Settings > Secrets and variables > Actions > Variables
 output "github_variables" {
-  description = "Variables GitHub Actions a creer (nom = valeur)"
+  description = "Seule variable GitHub Actions a creer ; region/domaine/initiales sont forces dans deploy.yml"
   value = {
     AWS_ACCOUNT_ID = local.account_id
-    AWS_REGION     = var.aws_region
-    DOMAIN_NAME    = var.domain_name
-    SUBDOMAIN      = var.subdomain
   }
 }
 
@@ -22,7 +19,7 @@ output "site_url" {
 # Uniquement pour lancer le Terraform principal depuis ta machine (facultatif).
 output "local_init_command" {
   description = "Commande d'init du Terraform principal (dossier terraform/) en local"
-  value       = "terraform init -backend-config=\"bucket=${aws_s3_bucket.state.id}\" -backend-config=\"region=${var.aws_region}\""
+  value       = "terraform init -backend-config=\"bucket=${aws_s3_bucket.state.id}\""
 }
 
 output "role_plan_arn" {
