@@ -6,6 +6,13 @@ github_repo  = "bricoshop"            # nom du depot (sans le owner)
 domain_name  = "alpha-awslab26.click" # zone Route 53 publique du compte AWS
 subdomain    = "rch"                  # site : https://rch.alpha-awslab26.click
 
+# IDs GitHub : necessaires si GitHub emet le claim sub au format
+# "repo:owner@<owner_id>/repo@<repo_id>:..." (sinon : "Not authorized to perform
+# sts:AssumeRoleWithWebIdentity"). Valeurs : https://api.github.com/repos/<owner>/<repo>
+# (champs owner.id et id).
+# github_owner_id = "123456789"
+# github_repo_id  = "987654321"
+
 # Mettre false si le compte AWS a deja un fournisseur OIDC GitHub
 # (erreur "EntityAlreadyExists ... token.actions.githubusercontent.com").
 # Dans un compte de formation partage, il existe en general deja : mettre false.

@@ -7,11 +7,15 @@ data "aws_route53_zone" "site" {
 }
 
 locals {
-  account_id   = data.aws_caller_identity.current.account_id
-  subject_base = "repo:${var.github_owner}/${var.github_repo}"
-  audience     = "sts.amazonaws.com"
-  oidc_host    = "token.actions.githubusercontent.com"
-  oidc_arn     = "arn:aws:iam::${local.account_id}:oidc-provider/${local.oidc_host}"
+  account_id = data.aws_caller_identity.current.account_id
+  # Formats du claim "sub" acceptes : classique + avec IDs immuables (si fournis).
+  subject_bases = compact([
+    "repo:${var.github_owner}/${var.github_repo}",
+    var.github_owner_id != null && var.github_repo_id != null ? "repo:${var.github_owner}@${var.github_owner_id}/${var.github_repo}@${var.github_repo_id}" : "",
+  ])
+  audience  = "sts.amazonaws.com"
+  oidc_host = "token.actions.githubusercontent.com"
+  oidc_arn  = "arn:aws:iam::${local.account_id}:oidc-provider/${local.oidc_host}"
 
   # Conventions partagees avec .github/workflows/deploy.yml : le workflow
   # code en dur ces noms prefixes "rch-" (+ vars.AWS_ACCOUNT_ID). Changer
@@ -101,7 +105,7 @@ data "aws_iam_policy_document" "trust_plan" {
     condition {
       test     = "StringEquals"
       variable = "${local.oidc_host}:sub"
-      values   = ["${local.subject_base}:pull_request"]
+      values   = [for s in local.subject_bases : "${s}:pull_request"]
     }
   }
 }
@@ -169,7 +173,7 @@ data "aws_iam_policy_document" "trust_deploy" {
     condition {
       test     = "StringEquals"
       variable = "${local.oidc_host}:sub"
-      values   = ["${local.subject_base}:environment:${local.environment}"]
+      values   = [for s in local.subject_bases : "${s}:environment:${local.environment}"]
     }
   }
 }

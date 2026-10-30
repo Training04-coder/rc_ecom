@@ -32,6 +32,22 @@ variable "github_repo" {
   type        = string
 }
 
+# GitHub peut emettre le claim "sub" avec les IDs immuables :
+#   repo:<owner>@<owner_id>/<repo>@<repo_id>:...
+# Renseigner les deux IDs pour accepter ce format en plus du format classique.
+# (IDs : https://api.github.com/repos/<owner>/<repo> -> owner.id et id)
+variable "github_owner_id" {
+  description = "ID numerique du compte GitHub (owner.id), null pour ne pas l'utiliser"
+  type        = string
+  default     = null
+}
+
+variable "github_repo_id" {
+  description = "ID numerique du depot GitHub (id), null pour ne pas l'utiliser"
+  type        = string
+  default     = null
+}
+
 variable "domain_name" {
   description = "Zone Route 53 publique existante dans le compte AWS du participant (ex: alpha-awslab26.click)"
   type        = string
