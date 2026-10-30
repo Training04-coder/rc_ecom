@@ -114,6 +114,11 @@ bootstrap n'est jamais touché ; au premier run le state est vide et rien n'est 
 Run workflow* avec `destroy_before_apply` = false. Le résumé du run affiche l'URL du site. Le
 HTTPS est disponible **1 à 3 min** après l'apply, le temps d'obtenir le certificat Let's Encrypt.
 
+Pour **tout supprimer sans redéployer** : *Actions → build-and-deploy → Run workflow* avec
+`action` = `destroy`. Après approbation, seul `terraform destroy` tourne sur la stack principale
+(plan et apply sont sautés, le bootstrap est conservé). Relancer avec `action` = `deploy` pour
+remettre le site en ligne.
+
 > **Attention** : le destroy supprime aussi le bucket de l'appli, donc la sauvegarde des
 > certificats Caddy. Chaque déploiement redemande un certificat Let's Encrypt (limite de 5 par
 > semaine pour le même nom) et coupe le site quelques minutes.
