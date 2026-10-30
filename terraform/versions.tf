@@ -12,8 +12,9 @@ provider "aws" {
   region = var.aws_region
   default_tags {
     tags = {
-      Project = "secagent-java-lab"
-      Owner   = "formation"
+      Project  = "${var.initials}-secagent-java-lab"
+      Owner    = "formation"
+      Initials = var.initials
     }
   }
 }

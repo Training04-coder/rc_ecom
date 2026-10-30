@@ -7,25 +7,30 @@ data "aws_route53_zone" "site" {
 }
 
 locals {
-  account_id   = data.aws_caller_identity.current.account_id
-  subject_base = "repo:${var.github_owner}/${var.github_repo}"
-  audience     = "sts.amazonaws.com"
-  oidc_host    = "token.actions.githubusercontent.com"
-  oidc_arn     = "arn:aws:iam::${local.account_id}:oidc-provider/${local.oidc_host}"
+  account_id = data.aws_caller_identity.current.account_id
+  # Formats du claim "sub" acceptes : classique + avec IDs immuables (si fournis).
+  subject_bases = compact([
+    "repo:${var.github_owner}/${var.github_repo}",
+    var.github_owner_id != null && var.github_repo_id != null ? "repo:${var.github_owner}@${var.github_owner_id}/${var.github_repo}@${var.github_repo_id}" : "",
+  ])
+  audience  = "sts.amazonaws.com"
+  oidc_host = "token.actions.githubusercontent.com"
+  oidc_arn  = "arn:aws:iam::${local.account_id}:oidc-provider/${local.oidc_host}"
 
   # Conventions partagees avec .github/workflows/deploy.yml : le workflow
-  # reconstruit ces noms a partir de vars.AWS_ACCOUNT_ID. Ne pas les changer seuls.
-  state_bucket     = "bricoshop-tfstate-${local.account_id}"
-  role_plan_name   = "github-actions-plan"
-  role_deploy_name = "github-actions-deploy"
+  # code en dur ces noms prefixes "rch-" (+ vars.AWS_ACCOUNT_ID). Changer
+  # var.initials impose de modifier deploy.yml et terraform/backend.tf ensemble.
+  state_bucket     = "${var.initials}-bricoshop-tfstate-${local.account_id}"
+  role_plan_name   = "${var.initials}-github-actions-plan"
+  role_deploy_name = "${var.initials}-github-actions-deploy"
   environment      = "production"
 
   # Ressources du Terraform principal (name_prefix / bucket_prefix => suffixe
   # aleatoire inconnu, d'ou les wildcards sur le prefixe).
-  app_bucket_arn  = "arn:aws:s3:::secagent-java-app-*"
-  ec2_role_arn    = "arn:aws:iam::${local.account_id}:role/secagent-java-ec2-*"
-  ec2_profile_arn = "arn:aws:iam::${local.account_id}:instance-profile/secagent-java-ec2-*"
-  log_group_arn   = "arn:aws:logs:${var.aws_region}:${local.account_id}:log-group:/bricoshop/app"
+  app_bucket_arn  = "arn:aws:s3:::${var.initials}-secagent-java-app-*"
+  ec2_role_arn    = "arn:aws:iam::${local.account_id}:role/${var.initials}-secagent-java-ec2-*"
+  ec2_profile_arn = "arn:aws:iam::${local.account_id}:instance-profile/${var.initials}-secagent-java-ec2-*"
+  log_group_arn   = "arn:aws:logs:${var.aws_region}:${local.account_id}:log-group:/${var.initials}-bricoshop/app"
   zone_arn        = "arn:aws:route53:::hostedzone/${data.aws_route53_zone.site.zone_id}"
 }
 
@@ -38,6 +43,8 @@ resource "aws_iam_openid_connect_provider" "github" {
   count          = var.create_oidc_provider ? 1 : 0
   url            = "https://${local.oidc_host}"
   client_id_list = [local.audience]
+
+  tags = { Name = "${var.initials}-github-oidc" }
 }
 
 # ---------------------------------------------------------------------------
@@ -47,6 +54,8 @@ resource "aws_iam_openid_connect_provider" "github" {
 resource "aws_s3_bucket" "state" {
   bucket        = local.state_bucket
   force_destroy = true
+
+  tags = { Name = local.state_bucket }
 }
 
 resource "aws_s3_bucket_versioning" "state" {
@@ -96,7 +105,7 @@ data "aws_iam_policy_document" "trust_plan" {
     condition {
       test     = "StringEquals"
       variable = "${local.oidc_host}:sub"
-      values   = ["${local.subject_base}:pull_request"]
+      values   = [for s in local.subject_bases : "${s}:pull_request"]
     }
   }
 }
@@ -106,6 +115,8 @@ resource "aws_iam_role" "plan" {
   description          = "GitHub Actions : terraform plan depuis les PR (lecture seule)"
   assume_role_policy   = data.aws_iam_policy_document.trust_plan.json
   max_session_duration = 3600
+
+  tags = { Name = local.role_plan_name }
 
   # La trust policy reference le fournisseur OIDC : il doit exister avant.
   depends_on = [aws_iam_openid_connect_provider.github]
@@ -118,7 +129,7 @@ resource "aws_iam_role_policy_attachment" "plan_readonly" {
 
 # Acces minimal au bucket de state pour le refresh du plan.
 resource "aws_iam_role_policy" "plan_state" {
-  name = "acces-state-plan"
+  name = "${var.initials}-acces-state-plan"
   role = aws_iam_role.plan.id
   policy = jsonencode({
     Version = "2012-10-17"
@@ -162,7 +173,7 @@ data "aws_iam_policy_document" "trust_deploy" {
     condition {
       test     = "StringEquals"
       variable = "${local.oidc_host}:sub"
-      values   = ["${local.subject_base}:environment:${local.environment}"]
+      values   = [for s in local.subject_bases : "${s}:environment:${local.environment}"]
     }
   }
 }
@@ -173,11 +184,13 @@ resource "aws_iam_role" "deploy" {
   assume_role_policy   = data.aws_iam_policy_document.trust_deploy.json
   max_session_duration = 3600
 
+  tags = { Name = local.role_deploy_name }
+
   depends_on = [aws_iam_openid_connect_provider.github]
 }
 
 resource "aws_iam_role_policy" "deploy_state" {
-  name = "acces-state-deploy"
+  name = "${var.initials}-acces-state-deploy"
   role = aws_iam_role.deploy.id
   policy = jsonencode({
     Version = "2012-10-17"
@@ -200,7 +213,7 @@ resource "aws_iam_role_policy" "deploy_state" {
 
 # Politique "infrastructure" : scopée aux services et ARN du Terraform principal.
 resource "aws_iam_role_policy" "deploy_infra" {
-  name = "infra-moindre-privilege"
+  name = "${var.initials}-infra-moindre-privilege"
   role = aws_iam_role.deploy.id
   policy = jsonencode({
     Version = "2012-10-17"

@@ -1,5 +1,6 @@
 locals {
-  fqdn = "${var.subdomain}.${var.domain_name}"
+  fqdn        = "${var.subdomain}.${var.domain_name}"
+  name_prefix = "${var.initials}-secagent-java"
 }
 
 data "aws_vpc" "default" {
@@ -17,7 +18,7 @@ data "aws_route53_zone" "this" {
 
 # --- Security group : HTTP/HTTPS publics, pas de SSH (acces via SSM) ---
 resource "aws_security_group" "web" {
-  name_prefix = "secagent-java-web-"
+  name_prefix = "${local.name_prefix}-web-"
   description = "Web public pour lab Security Agent"
   vpc_id      = data.aws_vpc.default.id
 
@@ -44,11 +45,13 @@ resource "aws_security_group" "web" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  tags = { Name = "${local.name_prefix}-web" }
 }
 
 # --- Role IAM minimal : Session Manager + lecture S3 + ecriture CloudWatch Logs ---
 resource "aws_iam_role" "ec2" {
-  name_prefix = "secagent-java-ec2-"
+  name_prefix = "${local.name_prefix}-ec2-"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -57,6 +60,8 @@ resource "aws_iam_role" "ec2" {
       Action    = "sts:AssumeRole"
     }]
   })
+
+  tags = { Name = "${local.name_prefix}-ec2" }
 }
 
 resource "aws_iam_role_policy_attachment" "ssm" {
@@ -65,7 +70,7 @@ resource "aws_iam_role_policy_attachment" "ssm" {
 }
 
 resource "aws_iam_role_policy" "s3_read" {
-  name = "lecture-code-app"
+  name = "${var.initials}-lecture-code-app"
   role = aws_iam_role.ec2.id
   policy = jsonencode({
     Version = "2012-10-17"
@@ -79,7 +84,7 @@ resource "aws_iam_role_policy" "s3_read" {
 # Sauvegarde/restauration des certificats Caddy sous le prefixe caddy/ du bucket
 # (lecture deja couverte par s3_read ; ici on ajoute l'ecriture)
 resource "aws_iam_role_policy" "caddy_certs" {
-  name = "sauvegarde-certs-caddy"
+  name = "${var.initials}-sauvegarde-certs-caddy"
   role = aws_iam_role.ec2.id
   policy = jsonencode({
     Version = "2012-10-17"
@@ -91,9 +96,9 @@ resource "aws_iam_role_policy" "caddy_certs" {
   })
 }
 
-# Droits minimaux CloudWatch Logs, restreints au seul log group /bricoshop/app
+# Droits minimaux CloudWatch Logs, restreints au seul log group /rch-bricoshop/app
 resource "aws_iam_role_policy" "cw_logs" {
-  name = "ecriture-logs-cloudwatch"
+  name = "${var.initials}-ecriture-logs-cloudwatch"
   role = aws_iam_role.ec2.id
   policy = jsonencode({
     Version = "2012-10-17"
@@ -115,8 +120,10 @@ resource "aws_iam_role_policy" "cw_logs" {
 
 # --- CloudWatch Logs : destination des logs applicatifs ---
 resource "aws_cloudwatch_log_group" "app" {
-  name              = "/bricoshop/app"
+  name              = "/${var.initials}-bricoshop/app"
   retention_in_days = 30
+
+  tags = { Name = "${var.initials}-bricoshop-app" }
 }
 
 # --- S3 prive : code de l'appli (App.java + static/), telecharge par l'EC2 au demarrage ---
@@ -130,8 +137,10 @@ locals {
 }
 
 resource "aws_s3_bucket" "app" {
-  bucket_prefix = "secagent-java-app-"
+  bucket_prefix = "${local.name_prefix}-app-"
   force_destroy = true
+
+  tags = { Name = "${local.name_prefix}-app" }
 }
 
 resource "aws_s3_bucket_public_access_block" "app" {
@@ -151,8 +160,10 @@ resource "aws_s3_object" "app" {
 }
 
 resource "aws_iam_instance_profile" "ec2" {
-  name_prefix = "secagent-java-ec2-"
+  name_prefix = "${local.name_prefix}-ec2-"
   role        = aws_iam_role.ec2.name
+
+  tags = { Name = "${local.name_prefix}-ec2" }
 }
 
 # --- EC2 : Java 21 Corretto + Caddy (HTTPS Let's Encrypt automatique) ---
@@ -187,15 +198,17 @@ resource "aws_instance" "web" {
     volume_type = "gp3"
   }
 
-  tags = { Name = "secagent-java-web" }
+  tags = { Name = "${local.name_prefix}-web" }
 }
 
 resource "aws_eip" "web" {
   domain   = "vpc"
   instance = aws_instance.web.id
+
+  tags = { Name = "${local.name_prefix}-eip" }
 }
 
-# --- DNS : app.mondomaine.tld -> IP elastique ---
+# --- DNS : rch.alpha-awslab26.click -> IP elastique ---
 resource "aws_route53_record" "app" {
   zone_id = data.aws_route53_zone.this.zone_id
   name    = local.fqdn
